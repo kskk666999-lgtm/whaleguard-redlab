@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://whaleguard.local/schemas/test-case.schema.json",
+  "title": "WhaleGuard test case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "category", "severity", "description", "input", "context", "expected_behavior", "forbidden_behavior", "evaluator", "tags", "references"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^WG-[A-Z]+-[0-9]{3}$"},
+    "name": {"type": "string", "minLength": 3},
+    "category": {"type": "string", "minLength": 2},
+    "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
+    "description": {"type": "string", "minLength": 10},
+    "input": {"type": ["string", "object", "array"]},
+    "context": {"type": "object"},
+    "expected_behavior": {"type": "string"},
+    "forbidden_behavior": {"type": "string"},
+    "evaluator": {"type": "object", "required": ["type"]},
+    "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "references": {"type": "array", "items": {"type": "string"}}
+  }
+}

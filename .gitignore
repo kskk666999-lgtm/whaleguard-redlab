@@ -1,0 +1,36 @@
+# Secrets and local state
+.env
+.env.*.local
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+*.log
+uploads/
+reports/generated/
+.local/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Node / Next.js / Playwright
+node_modules/
+.next/
+coverage/
+playwright-report/
+test-results/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

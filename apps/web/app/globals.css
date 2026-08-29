@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 38% 97%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --border: 215 24% 88%;
+    --input: 215 24% 88%;
+    --ring: 172 66% 40%;
+    --primary: 172 66% 35%;
+    --primary-foreground: 166 76% 97%;
+    --secondary: 215 28% 93%;
+    --secondary-foreground: 222 30% 20%;
+    --muted: 215 25% 94%;
+    --muted-foreground: 215 16% 43%;
+    --accent: 173 42% 91%;
+    --accent-foreground: 173 80% 22%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    color-scheme: light;
+  }
+
+  .dark {
+    --background: 222 48% 6%;
+    --foreground: 210 30% 93%;
+    --card: 220 39% 9%;
+    --card-foreground: 210 30% 93%;
+    --border: 216 28% 17%;
+    --input: 216 28% 17%;
+    --ring: 168 72% 44%;
+    --primary: 168 72% 44%;
+    --primary-foreground: 174 100% 7%;
+    --secondary: 218 31% 13%;
+    --secondary-foreground: 210 25% 90%;
+    --muted: 218 30% 12%;
+    --muted-foreground: 215 16% 63%;
+    --accent: 172 45% 14%;
+    --accent-foreground: 166 67% 71%;
+    --destructive: 0 64% 48%;
+    --destructive-foreground: 0 0% 100%;
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    min-height: 100vh;
+    background-image:
+      radial-gradient(circle at 10% 0%, rgba(20, 184, 166, 0.055), transparent 32rem),
+      radial-gradient(circle at 95% 90%, rgba(56, 189, 248, 0.04), transparent 30rem);
+  }
+
+  ::selection {
+    background: rgba(45, 212, 191, 0.25);
+  }
+}
+
+@layer components {
+  .security-grid {
+    background-image: radial-gradient(rgba(100, 116, 139, 0.16) 0.7px, transparent 0.7px);
+    background-size: 18px 18px;
+  }
+
+  .panel {
+    @apply rounded-xl border bg-card text-card-foreground shadow-panel;
+  }
+
+  .panel-header {
+    @apply flex items-start justify-between gap-4 border-b px-5 py-4;
+  }
+
+  .data-label {
+    @apply text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground;
+  }
+
+  .mono-value {
+    @apply font-mono text-xs tracking-tight;
+  }
+
+  .status-dot {
+    @apply inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.85)];
+  }
+
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border)) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+.react-flow__controls-button {
+  background: hsl(var(--card)) !important;
+  border-color: hsl(var(--border)) !important;
+  fill: hsl(var(--foreground)) !important;
+}

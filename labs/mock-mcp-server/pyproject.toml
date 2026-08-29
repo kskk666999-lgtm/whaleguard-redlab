@@ -1,0 +1,18 @@
+[project]
+name = "whaleguard-mock-mcp-server"
+version = "1.0.0"
+description = "Five safe MCP fixture tools for WhaleGuard AgentArena"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pydantic>=2.10,<3",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+test = ["httpx>=0.27,<1", "pytest>=8.3,<9"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["."]

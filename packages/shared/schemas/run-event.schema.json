@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://whaleguard.local/schemas/run-event.schema.json",
+  "type": "object",
+  "required": ["id", "run_id", "type", "timestamp", "message", "data"],
+  "properties": {
+    "id": {"type": "string", "format": "uuid"},
+    "run_id": {"type": "string", "format": "uuid"},
+    "type": {"enum": ["status", "progress", "policy", "result", "error"]},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "message": {"type": "string"},
+    "data": {"type": "object"}
+  }
+}
