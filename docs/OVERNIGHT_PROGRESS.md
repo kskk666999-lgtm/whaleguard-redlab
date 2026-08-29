@@ -1,12 +1,12 @@
 # WhaleGuard AI RedLab 通宵续作进度
 
-最近更新：2026-08-30 02:30 +08:00
+最近更新：2026-08-30 03:27 +08:00
 
 ## 结论
 
-当前工作区已从空目录完成到可运行、可测试、可继续扩展的单一 monorepo。代码、迁移、演示数据、Windows/Linux 启动入口、17 个产品页面、Scope Guard、MCPShield、AgentArena、规则评分与可选 LLM Judge 均已落地；本机 SQLite/受限内联任务后端的完整业务链路已真实运行。
+当前工作区已从空目录完成到可运行、可测试、可继续扩展的单一 monorepo。代码、迁移、演示数据、Windows/Linux 启动入口、17 个产品页面、Scope Guard、MCPShield、AgentArena、规则评分与可选 LLM Judge 均已落地；本机 SQLite/受限内联任务后端的完整业务链路已真实运行。完整 Docker 产品链路仍处于发布门禁 BLOCKED，不能宣称全部验证完成。
 
-当前主机没有可用 Docker Engine，因此不能诚实宣称镜像 build/up、PostgreSQL/Redis/RQ 容器运行已验证。Docker Compose 已用官方 Compose v5.5.0 执行 `config --quiet`，并通过仓库的网络/权限静态不变量校验。
+2026-08-30 重新核查确认：当前主机不仅没有可用 Engine，也没有 Docker CLI/Desktop、运行时进程或服务、named pipe、远程 context 和可用 WSL2 后端。因此镜像 build/up、PostgreSQL/Redis/RQ 容器运行与重启持久化均未执行。Docker Compose 已用官方独立 Compose v5.5.0 执行 `config --quiet`，并通过仓库的网络/权限静态不变量校验；该结果不等价于容器运行通过。
 
 ## 已完成能力
 
@@ -41,7 +41,9 @@
 | 真实本机产品烟测 | 11/11 通过 |
 | 浏览器实机 QA | 登录、主题、390px 导航、总览、MCPShield、运行详情通过；0 warning/error |
 | Compose 官方 CLI `config --quiet` | 通过（v5.5.0） |
-| Docker build/up | 未执行：本机无 Docker Engine |
+| 自定义 API/Web 端口和 RQ 队列渲染 | 通过 |
+| Windows START/CHECK/OPEN/STOP 缺失运行时失败路径 | 通过，均返回非零并明确提示 |
+| Docker build/up、8 服务 healthy、重启持久化 | **NOT RUN：本机无 Docker 运行时/WSL2 后端** |
 
 最近一次真实烟测产物：Agent run `96b8b25b-adf2-4834-964e-9887afe5cd56`，Model/Judge run `9f2e55ac-2fda-41f9-98ab-ef1b531457f4`，Report `4f4f4459-b7a6-4ece-b451-57d0ee3e19fb`。下载的 HTML 位于被 Git 忽略的 `.local/smoke-report.html`。
 
@@ -55,10 +57,12 @@
 - 修复烟测审计断言只读第一页而漏掉早期登录事件的问题。
 - 浏览器实测发现 MCP Server 列表把 5 个持久化 Tool 显示为 0；现已由 API 返回 `tool_count` 并复验为 5。
 - 修复 Docker/local 首次凭据文件互相覆盖的风险；两种运行方式使用独立凭据文件。
+- 修复 Compose 自定义 `API_PORT` / `WEB_PORT` 时前端 API 地址和 CORS 仍固定为 8000/3000 的问题。
+- 修复自定义 `RQ_QUEUE` 仅进入 API、Worker 仍固定监听 `whaleguard` 导致队列分叉的问题。
 
 ## 剩余非关键项
 
-- 在安装 Docker Engine 的主机上补跑完整镜像构建、8 服务启动、PostgreSQL/Redis/RQ 运行时和容器健康检查。
+- **发布关键项：** 安装并启动 Docker Desktop/WSL2 后端，再补跑完整镜像构建、8 服务启动、PostgreSQL/Redis/RQ 运行时、重启和 down/up 持久化。
 - 使用用户自有且明确授权的兼容渠道做可选 provider 兼容性矩阵；仓库不会附带真实 API Key。
 - 扩展报告 PDF、组织级 SSO、分布式对象存储和多节点 worker。这些不影响当前本地实验闭环。
 

@@ -4,6 +4,9 @@
 
 WhaleGuard 把 LLM/Agent 测试、MCP 元数据风险分析、Scope Guard、证据链、Finding 与多格式报告放在一套可审计的本地平台中。默认中文界面，内置演示目标均在 Docker 私有网络中，任何网络测试都必须先经过授权范围与审批策略。
 
+> [!IMPORTANT]
+> 当前发布证据已覆盖本地 SQLite/回环 Mock 的完整产品流程，但最后一次验证主机没有 Docker 运行时和 WSL2 后端，八服务 build/up 与重启持久化尚未执行。请勿把 `docker compose config` 通过理解为容器运行通过；精确状态见 [FINAL_STATUS.md](FINAL_STATUS.md)。
+
 > [!WARNING]
 > 本项目不提供 C2、WebShell、恶意载荷、凭据窃取、爆破、持久化、免杀、任意 Shell、未授权公网扫描或自动利用。只能用于你拥有或已取得明确授权的系统。
 

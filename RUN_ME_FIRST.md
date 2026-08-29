@@ -2,6 +2,17 @@
 
 本指南使用 Docker Compose；对应的首次凭据文件是 `.local\first-run-credentials.txt`。本机 `make seed` 的 SQLite 凭据另存为 `.local\local-first-run-credentials.txt`，不能用于 Docker 数据库。
 
+## 运行前硬门槛
+
+先在 PowerShell 执行：
+
+```powershell
+docker version
+docker compose version
+```
+
+两条命令都必须成功并显示 Server/Compose 版本。若提示 `docker` 命令不存在，需先安装 Docker Desktop；若只有 Client、没有 Server，应启动 Docker Desktop 并等待 WSL2 Engine 就绪。不要在这两项失败时把后续 Compose 配置校验当成完整启动成功。
+
 1. 安装并启动 Docker Desktop，等待状态显示 Engine running。
 2. 双击项目根目录的 `START_WHALEGUARD.bat`。
 3. 等待构建和健康检查完成；成功后浏览器会自动打开。

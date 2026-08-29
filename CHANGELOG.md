@@ -20,3 +20,8 @@
 
 - 默认阻止未授权公网目标、非 HTTP(S) 协议、云元数据地址、IPv4-mapped IPv6 绕过和重定向逃逸。
 - 默认服务端口仅绑定 `127.0.0.1`，AgentArena 服务不发布宿主机端口。
+
+### Fixed
+
+- Compose 自定义 `API_PORT` / `WEB_PORT` 时同步更新前端 API 地址和 API CORS 来源。
+- API 与 Worker 统一使用同一 `RQ_QUEUE`，避免自定义队列时任务无人消费。

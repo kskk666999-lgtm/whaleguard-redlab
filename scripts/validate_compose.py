@@ -83,6 +83,24 @@ def main() -> None:
             raise SystemExit(
                 f"{network}: expected isolated members {sorted(expected)}, got {sorted(actual)}"
             )
+
+    api_environment = services["api"].get("environment", {})
+    worker_environment = services["worker"].get("environment", {})
+    web_environment = services["web"].get("environment", {})
+    web_build_args = services["web"].get("build", {}).get("args", {})
+    expected_api_url = "http://127.0.0.1:${API_PORT:-8000}/api/v1"
+    expected_origins = "http://127.0.0.1:${WEB_PORT:-3000},http://localhost:${WEB_PORT:-3000}"
+    if web_environment.get("NEXT_PUBLIC_API_URL") != expected_api_url:
+        raise SystemExit("web: runtime API URL must follow the published API_PORT")
+    if web_build_args.get("NEXT_PUBLIC_API_URL") != expected_api_url:
+        raise SystemExit("web: build-time API URL must follow the published API_PORT")
+    if api_environment.get("WHALEGUARD_ALLOWED_ORIGINS") != expected_origins:
+        raise SystemExit("api: CORS origins must follow the published WEB_PORT")
+    expected_queue = "${RQ_QUEUE:-whaleguard}"
+    if api_environment.get("RQ_QUEUE") != expected_queue:
+        raise SystemExit("api: RQ_QUEUE must use the shared Compose setting")
+    if worker_environment.get("RQ_QUEUE") != expected_queue:
+        raise SystemExit("worker: RQ_QUEUE must use the shared Compose setting")
     print(f"validated {len(services)} compose services and private-network invariants")
 
 

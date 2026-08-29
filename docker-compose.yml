@@ -69,11 +69,12 @@ services:
       WHALEGUARD_BIND_PORT: 8000
       WHALEGUARD_DATABASE_URL: ${WHALEGUARD_DATABASE_URL}
       WHALEGUARD_REDIS_URL: ${WHALEGUARD_REDIS_URL}
+      RQ_QUEUE: ${RQ_QUEUE:-whaleguard}
       WHALEGUARD_JWT_SECRET: ${WHALEGUARD_JWT_SECRET}
       WHALEGUARD_ENCRYPTION_SECRET: ${WHALEGUARD_ENCRYPTION_SECRET}
       WHALEGUARD_CREDENTIALS_FILE: /app/.local/first-run-credentials.txt
       WHALEGUARD_ALLOWED_HOSTS: api,127.0.0.1,localhost
-      WHALEGUARD_ALLOWED_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
+      WHALEGUARD_ALLOWED_ORIGINS: http://127.0.0.1:${WEB_PORT:-3000},http://localhost:${WEB_PORT:-3000}
       MOCK_AGENT_URL: http://mock-agent:8102
       MOCK_MCP_URL: http://mock-mcp-server:8103
     ports:
@@ -105,7 +106,7 @@ services:
       context: ./apps/worker
     environment:
       REDIS_URL: ${WHALEGUARD_REDIS_URL}
-      RQ_QUEUE: whaleguard
+      RQ_QUEUE: ${RQ_QUEUE:-whaleguard}
       WG_WORKER_ALLOWED_API_ORIGINS: http://api:8000
       WG_WORKER_TOKEN: ${WG_WORKER_TOKEN}
     read_only: true
@@ -128,11 +129,11 @@ services:
     build:
       context: ./apps/web
       args:
-        NEXT_PUBLIC_API_URL: http://127.0.0.1:8000/api/v1
+        NEXT_PUBLIC_API_URL: http://127.0.0.1:${API_PORT:-8000}/api/v1
     environment:
       HOSTNAME: 0.0.0.0
       PORT: 3000
-      NEXT_PUBLIC_API_URL: http://127.0.0.1:8000/api/v1
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:${API_PORT:-8000}/api/v1
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:3000"
     read_only: true
