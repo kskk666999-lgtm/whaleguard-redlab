@@ -27,7 +27,7 @@
 - 登录：短期 JWT；浏览器同时使用 CSRF 双提交令牌进行状态变更保护。
 - 模型密钥：Fernet/AES 级别的认证加密，列表和详情只返回掩码。
 - 初始管理员：密码由安全随机数生成，只写入权限受限且被忽略的首次启动凭据文件；日志仅打印文件路径。
-- 日志：Authorization、Cookie、API Key、token-like 值和异常内部信息脱敏。
+- 日志：Authorization、Cookie、API Key、token-like 值、带认证信息的 URL 和异常内容先脱敏再写入 `.local/logs/`；脚本不读取或记录 `.env` 与首次凭据文件内容。
 
 ## 输入与输出
 
@@ -35,6 +35,15 @@
 - 上传限制大小、MIME、扩展名；服务端生成存储名并校验最终路径在上传根内。
 - 报告模板开启 autoescape，CSP 禁止内联脚本；附件提供哈希与下载白名单。
 - MCP JSON 只作为数据解析，绝不启动其中的 command/args。
+
+## Windows Docker 执行边界
+
+- 只接受 Docker Desktop 的本机 Windows named pipe；远程 TCP/SSH context 和 Docker 客户端覆盖变量失败关闭。
+- Desktop、CLI 与 Compose 插件必须来自同一个当前用户安装根，并通过 Docker Inc. 签名、产品名和最低版本门禁。
+- Compose 使用隔离、无 BOM 的受管 CLI 配置；高优先级插件目录、`.env`/进程环境中的 `COMPOSE_BAKE` 与 `BUILDX_BAKE_*` 均被拒绝。
+- Compose project name 包含规范仓库根路径的稳定 SHA-256 短后缀，避免不同检出目录复用同名容器、卷或网络；已有容器还必须带有匹配的 Compose working-directory 标签。
+- 安装流程不执行全局 `wsl --shutdown`；安装、修复或升级前若发现活动 Docker Desktop、Engine 或容器，会要求显式决策，不会静默中断其他工作负载。
+- UAC 提升阶段使用父进程内存中构造、Parser 校验的 EncodedCommand；高完整性进程只调用真实 System32 的 DISM/WSL，不读取或写入用户可修改的仓库脚本。
 
 ## 非目标
 

@@ -30,3 +30,15 @@ docker compose logs redis worker
 ## Docker 不存在
 
 源码级单元/集成测试仍可使用本地 Python/Node 环境运行，但 Compose 配置校验和完整私有网络验收必须在安装 Docker/Compose 后执行；不能以 YAML 解析替代真实启动验收。
+
+## Docker context 被拒绝
+
+Windows 启动、检查、停止、重置和验证脚本默认只允许本机 `npipe://` Docker Desktop endpoint。若设置了远程 `DOCKER_HOST`，或当前 context 指向 TCP/SSH 主机，脚本会在任何 Compose 变更前失败关闭。清除 `DOCKER_HOST`，执行 `docker context use desktop-linux`（部分安装使用 `default`），再用 `docker context inspect` 确认 endpoint 是本机 named pipe。不要为绕过此保护而修改脚本。
+
+若错误指出 `COMPOSE_BAKE`、`BUILDX_BAKE_*` 或 `cli-plugins` shadowing，请从当前进程环境或本项目 `.env` 移除对应覆盖，并删除受管 `.local/docker-cli-config/cli-plugins` 影子目录；不要通过放宽门禁启用未验证插件。若安装/升级提示 Docker 工作负载仍在运行，先自行保存并正常停止相关项目；自动脚本不会替你中断无关容器或全部 WSL 发行版。
+
+## 服务没有全部 healthy
+
+`START_WHALEGUARD.bat` 会等待 db、redis、api、worker、web、mock-llm、mock-agent、mock-mcp-server 全部 healthy，并额外要求 API `/ready` 的数据库状态为 `ok`。运行 `CHECK_WHALEGUARD.bat` 可查看每个服务的 state/health、端口 PID 和针对性建议。
+
+启动、检查、验证和烟测会把经过脱敏的状态写入 `.local/logs/`，每类操作最多保留最近 20 份。失败时启动脚本还会采集全部 8 个服务的有限尾部日志，并遮罩密码、Authorization、Cookie、Token、API Key 和带认证信息的 URL；日志不会读取 `.env` 或首次凭据文件内容。

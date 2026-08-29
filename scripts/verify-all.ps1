@@ -2,7 +2,8 @@ param(
     [switch]$SkipInstall,
     [switch]$SkipE2E,
     [switch]$SkipSmoke,
-    [string]$CredentialPath = ""
+    [string]$CredentialPath = "",
+    [ValidateSet("Docker", "Local")][string]$RuntimeMode = "Docker"
 )
 
 Set-StrictMode -Version Latest
@@ -10,6 +11,7 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 . (Join-Path $PSScriptRoot "whaleguard-common.ps1")
+$dockerStackAttempted = $false
 
 function Invoke-WgChecked {
     param(
@@ -18,7 +20,7 @@ function Invoke-WgChecked {
         [string[]]$Arguments = @(),
         [string]$WorkingDirectory = ""
     )
-    Write-Host "==> $Label"
+    Write-WgMessage -Message "==> $Label" -Color "Cyan"
     $previous = Get-Location
     try {
         if ($WorkingDirectory) { Set-Location -LiteralPath $WorkingDirectory }
@@ -26,6 +28,7 @@ function Invoke-WgChecked {
         if ($LASTEXITCODE -ne 0) {
             throw "$Label failed with exit code $LASTEXITCODE"
         }
+        Write-WgMessage -Message "[PASS] $Label" -Color "Green"
     }
     finally {
         Set-Location -LiteralPath $previous
@@ -41,6 +44,8 @@ function Get-WgNpm {
 
 try {
     $root = Get-WgRoot
+    $null = Start-WgOperationLog -Name "verify"
+    Write-WgMessage -Message "Verification runtime mode: $RuntimeMode"
     $venvPython = Join-Path $root ".venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
         $systemPython = Get-WgPython
@@ -77,6 +82,7 @@ try {
         Invoke-WgChecked -Label "$lab tests" -File $python -Arguments @("-m", "pytest", "-q") -WorkingDirectory (Join-Path $root "labs\$lab")
     }
     Invoke-WgChecked -Label "Alembic upgrade/downgrade/upgrade" -File $python -Arguments @("scripts\test_migrations.py") -WorkingDirectory $root
+    Invoke-WgChecked -Label "Windows automation tests" -File $python -Arguments @("-m", "pytest", "-q", "scripts\tests") -WorkingDirectory $root
 
     Invoke-WgChecked -Label "Frontend component tests" -File $npm -Arguments @("test") -WorkingDirectory $webRoot
     Invoke-WgChecked -Label "Frontend lint" -File $npm -Arguments @("run", "lint") -WorkingDirectory $webRoot
@@ -86,12 +92,16 @@ try {
         Invoke-WgChecked -Label "Playwright browser flow" -File $npm -Arguments @("run", "test:e2e") -WorkingDirectory $webRoot
     }
 
-    $docker = Get-Command docker -ErrorAction SilentlyContinue
-    if ($docker) {
-        Invoke-WgChecked -Label "Docker Compose canonical config" -File $docker.Source -Arguments @("compose", "-f", "docker-compose.yml", "config", "--quiet") -WorkingDirectory $root
+    $dockerPath = $null
+    try { $dockerPath = Get-WgDocker } catch { }
+    if ($dockerPath) {
+        $target = Get-WgLocalDockerTarget -Docker $dockerPath
+        Assert-WgComposeOwnership -Docker $dockerPath -Endpoint $target.Endpoint
+        $composeArguments = @(Get-WgComposeBaseArguments -Endpoint $target.Endpoint) + @("config", "--quiet")
+        Invoke-WgChecked -Label "Docker Compose canonical config" -File $dockerPath -Arguments $composeArguments -WorkingDirectory $root
     }
     else {
-        Write-Host "==> Docker CLI unavailable; canonical YAML/security validation passed, engine validation skipped."
+        Write-WgMessage -Message "==> Docker CLI unavailable; canonical YAML/security validation passed, engine validation skipped." -Level "WARN" -Color "Yellow"
     }
 
     if (-not $SkipSmoke) {
@@ -99,29 +109,38 @@ try {
         $webPort = Get-WgEnvValue -Name "WEB_PORT" -Default "3000"
         $apiBase = "http://127.0.0.1:$apiPort"
         $webBase = "http://127.0.0.1:$webPort"
-        $apiReady = Test-WgHttp -Uri "$apiBase/ready"
+        $apiReady = Test-WgApiReady -Uri "$apiBase/ready"
         $webReady = Test-WgHttp -Uri $webBase
-        if (-not ($apiReady -and $webReady)) {
-            Assert-WgDockerEngine | Out-Null
-            Invoke-WgChecked -Label "Build and start complete Docker stack" -File $docker.Source -Arguments @("compose", "-f", "docker-compose.yml", "up", "-d", "--build") -WorkingDirectory $root
-        }
-        if (-not $CredentialPath) {
-            $dockerCredentials = Join-Path $root ".local\first-run-credentials.txt"
-            $localCredentials = Join-Path $root ".local\local-first-run-credentials.txt"
-            $CredentialPath = if ($apiReady -and $webReady -and (Test-Path -LiteralPath $localCredentials -PathType Leaf)) {
-                $localCredentials
-            }
-            else {
-                $dockerCredentials
+        if ($RuntimeMode -eq "Docker") {
+            $dockerPath = Assert-WgDockerEngine
+            $target = Get-WgLocalDockerTarget -Docker $dockerPath
+            Assert-WgComposeOwnership -Docker $dockerPath -Endpoint $target.Endpoint
+            $composeArguments = @(Get-WgComposeBaseArguments -Endpoint $target.Endpoint) + @("up", "-d", "--build")
+            $dockerStackAttempted = $true
+            Invoke-WgChecked -Label "Build and start complete Docker stack" -File $dockerPath -Arguments $composeArguments -WorkingDirectory $root
+            $null = Wait-WgStackHealthy -ApiPort ([int]$apiPort) -WebPort ([int]$webPort) -TimeoutSeconds 300
+            if (-not $CredentialPath) {
+                $CredentialPath = Join-Path $root ".local\first-run-credentials.txt"
             }
         }
-        Invoke-WgChecked -Label "Authenticated product smoke test" -File (Get-Command powershell.exe -ErrorAction Stop).Source -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts\smoke-test.ps1", "-ApiBase", "$apiBase/api/v1", "-WebBase", $webBase, "-CredentialPath", $credentialPath) -WorkingDirectory $root
+        else {
+            if (-not ($apiReady -and $webReady)) {
+                throw "Local runtime mode requires an already-running API /ready endpoint and Web application."
+            }
+            if (-not $CredentialPath) {
+                $CredentialPath = Join-Path $root ".local\local-first-run-credentials.txt"
+            }
+        }
+        Invoke-WgChecked -Label "Authenticated product smoke test" -File (Get-Command powershell.exe -ErrorAction Stop).Source -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts\smoke-test.ps1", "-ApiBase", "$apiBase/api/v1", "-WebBase", $webBase, "-CredentialPath", $CredentialPath, "-RuntimeMode", $RuntimeMode) -WorkingDirectory $root
     }
 
-    Write-Host "VERIFY_ALL_OK"
+    Write-WgMessage -Message "VERIFY_ALL_OK" -Color "Green"
+    Write-WgMessage -Message "Operation log: $(Get-WgOperationLogPath)"
     exit 0
 }
 catch {
-    Write-Error "VERIFY_ALL_FAILED: $($_.Exception.Message)"
+    Write-WgMessage -Message "VERIFY_ALL_FAILED: $($_.Exception.Message)" -Level "ERROR" -Color "Red"
+    if ($dockerStackAttempted) { Write-WgComposeDiagnostics -Tail 80 }
+    Write-WgMessage -Message "Operation log: $(Get-WgOperationLogPath)" -Level "ERROR"
     exit 1
 }

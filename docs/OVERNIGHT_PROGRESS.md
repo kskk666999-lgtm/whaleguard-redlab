@@ -1,12 +1,12 @@
 # WhaleGuard AI RedLab 通宵续作进度
 
-最近更新：2026-08-30 03:27 +08:00
+最近更新：2026-08-30 06:07 +08:00
 
 ## 结论
 
-当前工作区已从空目录完成到可运行、可测试、可继续扩展的单一 monorepo。代码、迁移、演示数据、Windows/Linux 启动入口、17 个产品页面、Scope Guard、MCPShield、AgentArena、规则评分与可选 LLM Judge 均已落地；本机 SQLite/受限内联任务后端的完整业务链路已真实运行。完整 Docker 产品链路仍处于发布门禁 BLOCKED，不能宣称全部验证完成。
+当前工作区已从空目录完成到可运行、可测试、可继续扩展的单一 monorepo。代码、迁移、演示数据、Windows/Linux 启动入口、17 个产品页面、Scope Guard、MCPShield、AgentArena、规则评分与可选 LLM Judge 均已落地；本机 SQLite/受限内联任务后端的完整业务链路已真实运行。Windows 还新增了容器兼容预检、一键安装和重启后续作入口。完整 Docker 产品链路仍处于发布门禁 **BLOCKED**，不能宣称全部验证完成。
 
-2026-08-30 重新核查确认：当前主机不仅没有可用 Engine，也没有 Docker CLI/Desktop、运行时进程或服务、named pipe、远程 context 和可用 WSL2 后端。因此镜像 build/up、PostgreSQL/Redis/RQ 容器运行与重启持久化均未执行。Docker Compose 已用官方独立 Compose v5.5.0 执行 `config --quiet`，并通过仓库的网络/权限静态不变量校验；该结果不等价于容器运行通过。
+2026-08-30 04:21–04:24 +08:00 的首次提升尝试和随后只读核查确认：本机是 Windows 11 家庭中文版 23H2 build 22631，并安装了 VirtualBox 5.2.30；两者均未通过当前一键安装器的兼容门禁。用户已接受首轮 UAC，但 WSL web-download 返回 HTTP 403，VirtualMachinePlatform 仅被暂存、没有重启，提升阶段也没有成功注册自动续作入口；Docker CLI/Desktop/Engine 仍未安装。因此镜像 build/up、PostgreSQL/Redis/RQ 容器运行、Docker smoke 与重启持久化均未执行。此前的官方 Compose v5.5.0 `config --quiet` 和网络/权限静态不变量校验不等价于容器运行通过。
 
 ## 已完成能力
 
@@ -21,31 +21,28 @@
 - Findings、证据 SHA-256、原始输入/输出、Tool Call、Policy Decision、审计记录及 HTML/Markdown/JSON 报告链路已真实跑通。
 - Next.js 中文控制台包含登录和 16 个业务页面；暗/亮主题、桌面/移动布局、搜索/过滤/分页、加载/错误/空状态和业务按钮已实现。
 - Compose 恰好包含 8 个服务；arena/backend 使用内部网络，只有 API 作为受控桥接，Mock 服务不发布宿主端口，应用容器非 root、禁止提权并移除 Linux capabilities。
+- `INSTALL_WHALEGUARD_DOCKER.bat` 提供 Windows 首次安装入口：兼容预检通过后只申请一次 UAC，不自动重启，仅在提升阶段成功且确实需要重启时注册当前用户 Startup 一次性快捷方式；内嵌引导先计数、第三次先删除自启动，`RESUME_AFTER_REBOOT.bat` 提供人工恢复。
+- UAC 管理员阶段只执行父进程内存中构造并经 Parser 校验的 EncodedCommand，以及真实 System32 下的 DISM/WSL；不会从用户可写仓库加载脚本，也不信任可变 `SystemRoot`/`APPDATA` 路径。
+- Docker 供应链门禁把 Desktop、CLI、Compose 作为同根当前用户 bundle 验证；最低版本为 Desktop/Installer 4.88.1、CLI 29.2.0、Compose 5.1.0，并使用隔离、无 BOM、无高优先级 shadow 目录的客户端配置执行 Compose 与镜像拉取。
+- 受管 Compose 项目名包含规范仓库根路径的稳定哈希，隔离不同检出目录的容器、卷和网络；`.env` 与进程环境中的 `COMPOSE_BAKE` / `BUILDX_BAKE_*` 均被拒绝。
+- Windows 续作不执行全局 `wsl --shutdown`；Docker 安装、修复或升级前发现活动 Desktop/Engine/容器会 fail closed，避免误停其他 WSL 或 Docker 工作负载。
+- Windows 启动链路默认拒绝远程 Docker context，原生安全并原子生成 `.env`；只有 8 个服务全部 running/healthy 且 API `/ready` 数据库为 `ok` 才报告启动成功，诊断日志统一脱敏。
+- Docker smoke 成功后会保存无凭据的精确对象检查点；自动续作会分别执行 Compose `restart` 与不删除卷的 `down/up`，重新登录并核对原项目、TestRun、15 个 TestResult、Finding、审计 ID 和报告 SHA-256。
 
 ## 验证结果
 
 | 检查 | 结果 |
 |---|---|
-| Python 格式与 Ruff | 通过，67 个 Python 文件 |
-| policy-engine | 19 passed |
-| worker | 16 passed |
-| FastAPI 单元/API 集成 | 19 passed |
-| mock-llm / mock-agent / mock-mcp-server | 9 / 16 / 9 passed |
-| Python 小计 | 88 passed |
-| Alembic upgrade → downgrade → upgrade | 通过，23 张表 |
-| Vitest 组件/契约 | 11 passed |
-| ESLint / TypeScript | 通过 |
-| Next.js 16.3.3 production build | 通过，17 个产品页面（构建生成 20 页） |
-| Playwright Chromium | 3 passed |
-| 自动化测试总计 | 102 passed |
-| 真实本机产品烟测 | 11/11 通过 |
-| 浏览器实机 QA | 登录、主题、390px 导航、总览、MCPShield、运行详情通过；0 warning/error |
-| Compose 官方 CLI `config --quiet` | 通过（v5.5.0） |
-| 自定义 API/Web 端口和 RQ 队列渲染 | 通过 |
-| Windows START/CHECK/OPEN/STOP 缺失运行时失败路径 | 通过，均返回非零并明确提示 |
-| Docker build/up、8 服务 healthy、重启持久化 | **NOT RUN：本机无 Docker 运行时/WSL2 后端** |
+| 前一稳定检查点的本机产品链路 | SQLite/回环 Mock 的迁移、API、前端、浏览器和端到端 smoke 均有通过证据；旧数字不作为本轮最终计数 |
+| Windows 脚本专项 | 32 passed；当前 12 个 PowerShell 脚本通过 Windows PowerShell 5.1 与 PowerShell 7 解析 |
+| Ruff / 脚本文档链接 | 通过 |
+| 本轮代码回归 | **136 passed，0 failed**：Python 90 + Windows 32 + 前端组件 11 + Playwright 3 |
+| Alembic / Next.js | 23 张表 upgrade/downgrade/upgrade；Next.js 16.3.3 生产构建 20 路由，均通过 |
+| Compose 官方 CLI `config --quiet` | v5.5.0 退出码 0，SHA-256 与官方 release checksum 一致；仅代表静态解析 |
+| Windows 一键安装现场 | 首轮 UAC 已接受；WSL web-download HTTP 403；VMP 仅暂存；未重启；无自动续作入口；Docker 未安装 |
+| Docker build/up、8 服务 healthy、Docker smoke、重启持久化 | **NOT RUN** |
 
-最近一次真实烟测产物：Agent run `96b8b25b-adf2-4834-964e-9887afe5cd56`，Model/Judge run `9f2e55ac-2fda-41f9-98ab-ef1b531457f4`，Report `4f4f4459-b7a6-4ece-b451-57d0ee3e19fb`。下载的 HTML 位于被 Git 忽略的 `.local/smoke-report.html`。
+前一稳定检查点的烟测产物已保存在本机忽略目录和 SQLite 演示数据中；本文件不把旧运行 ID 当作本轮最终回归结果。
 
 ## 本轮发现并修复的真实问题
 
@@ -59,10 +56,17 @@
 - 修复 Docker/local 首次凭据文件互相覆盖的风险；两种运行方式使用独立凭据文件。
 - 修复 Compose 自定义 `API_PORT` / `WEB_PORT` 时前端 API 地址和 CORS 仍固定为 8000/3000 的问题。
 - 修复自定义 `RQ_QUEUE` 仅进入 API、Worker 仍固定监听 `whaleguard` 导致队列分叉的问题。
+- 新增 Windows 宿主兼容预检、一键 UAC 提升、可审计续作状态和人工恢复入口；不满足 Windows/VirtualBox 门禁时 fail closed。
+- 修复 Windows `.env` 生成依赖宿主 Python、非原子写入和可能覆盖现有文件的问题。
+- 修复启动仅检查 API/Web、未验证全部 Compose 服务与数据库 readiness 的问题，并让缺失 health 字段 fail closed。
+- 修复验证脚本自动猜 Docker/Local 凭据和 Mock LLM 地址的问题，改为显式运行模式。
+- 增加远程 Docker context 拒绝、逐服务 Doctor 诊断和持久化日志脱敏。
+- 增加真实 RQ Worker 注册/心跳/队列健康检查，并要求 smoke 等到 15 个 Worker 回调及持久化结果。
+- 增加精确持久化检查点，自动验证同一批数据库对象、审计 ID 和报告哈希在 Compose `restart` 与 `down/up` 后保持不变。
 
 ## 剩余非关键项
 
-- **发布关键项：** 安装并启动 Docker Desktop/WSL2 后端，再补跑完整镜像构建、8 服务启动、PostgreSQL/Redis/RQ 运行时、重启和 down/up 持久化。
+- **发布关键项：** 先升级 Windows 23H2 build 22631，并升级或卸载 VirtualBox 5.2.30；通过兼容门禁后重新运行一键安装，再补跑完整镜像构建、8 服务启动、PostgreSQL/Redis/RQ、Docker smoke、重启和 down/up 持久化。
 - 使用用户自有且明确授权的兼容渠道做可选 provider 兼容性矩阵；仓库不会附带真实 API Key。
 - 扩展报告 PDF、组织级 SSO、分布式对象存储和多节点 worker。这些不影响当前本地实验闭环。
 

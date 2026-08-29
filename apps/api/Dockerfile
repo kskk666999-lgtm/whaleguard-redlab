@@ -14,14 +14,19 @@ RUN groupadd --gid "$APP_GID" whaleguard \
       --shell /usr/sbin/nologin whaleguard
 WORKDIR /app
 
-COPY apps/api /app/apps/api
-COPY packages/policy-engine /app/packages/policy-engine
-COPY apps/worker /app/apps/worker
+COPY apps/api/pyproject.toml apps/api/README.md apps/api/alembic.ini /app/apps/api/
+COPY apps/api/alembic /app/apps/api/alembic
+COPY apps/api/src /app/apps/api/src
+COPY packages/policy-engine/pyproject.toml /app/packages/policy-engine/pyproject.toml
+COPY packages/policy-engine/src /app/packages/policy-engine/src
+COPY apps/worker/pyproject.toml /app/apps/worker/pyproject.toml
+COPY apps/worker/src /app/apps/worker/src
 RUN python -m pip install --upgrade pip \
     && python -m pip install /app/packages/policy-engine /app/apps/worker /app/apps/api
 
 WORKDIR /app/apps/api
-RUN mkdir -p /app/data/uploads /app/.local && chown -R whaleguard:whaleguard /app
+RUN mkdir -p /app/data/uploads /app/data/reports /app/.local \
+    && chown -R whaleguard:whaleguard /app
 USER whaleguard
 
 EXPOSE 8000

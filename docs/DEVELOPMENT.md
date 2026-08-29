@@ -29,7 +29,19 @@ python scripts/test_migrations.py
 docker compose config --quiet
 ```
 
-Windows 上可从仓库根目录运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verify-all.ps1`；脚本任一验收失败都会返回非零退出码。若正在验证本机 SQLite 进程，可追加 `-CredentialPath .local\local-first-run-credentials.txt`。Linux/WSL 可运行 `make verify` 完成静态检查、测试、构建、Playwright 模拟浏览器流程与 Compose 配置校验。Windows 脚本中的完整业务烟测要求 API/Web 已运行，或本机 Docker Engine 可供脚本启动整栈。
+Windows 上的完整 Docker 验收使用显式运行模式：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\verify-all.ps1 -RuntimeMode Docker
+```
+
+验证已经启动的本机 SQLite/回环 Mock 进程时必须显式选择 Local，并使用独立凭据：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\verify-all.ps1 -RuntimeMode Local -CredentialPath .local\local-first-run-credentials.txt
+```
+
+脚本不会在两份凭据之间猜测；任一验收失败都会返回非零退出码。Docker 模式在烟测前等待全部 8 个服务 healthy 并要求 `/ready` 返回数据库可用，Local 模式要求 API/Web 已经运行。Linux/WSL 可运行 `make verify` 完成静态检查、测试、构建、Playwright 模拟浏览器流程与 Compose 配置校验。
 
 完整业务烟测覆盖健康检查、登录、项目/Scope 创建、Mock Agent 运行、Finding 和 HTML 报告。测试必须使用虚构数据与本地地址。
 

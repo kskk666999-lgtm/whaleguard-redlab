@@ -11,4 +11,6 @@ COPY src /app/src
 RUN pip install --no-cache-dir .
 
 USER whaleguard
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=10 \
+  CMD ["python", "-m", "whaleguard_worker.healthcheck"]
 CMD ["python", "-m", "whaleguard_worker.main"]

@@ -2,6 +2,8 @@ param(
     [string]$ApiBase = "http://127.0.0.1:8000/api/v1",
     [string]$WebBase = "http://127.0.0.1:3000",
     [string]$CredentialPath = "",
+    [ValidateSet("Docker", "Local")][string]$RuntimeMode = "Docker",
+    [string]$MockLlmBaseUrl = "",
     [int]$TimeoutSeconds = 180
 )
 
@@ -59,10 +61,37 @@ function Read-WgCredentials {
 
 try {
     $root = Get-WgRoot
+    $null = Start-WgOperationLog -Name "smoke"
+    if (-not $MockLlmBaseUrl) {
+        $MockLlmBaseUrl = if ($RuntimeMode -eq "Docker") {
+            "http://mock-llm:8101/v1"
+        }
+        else {
+            "http://127.0.0.1:8101/v1"
+        }
+    }
+    $mockUri = $null
+    if (-not [Uri]::TryCreate($MockLlmBaseUrl, [UriKind]::Absolute, [ref]$mockUri)) {
+        throw "Mock LLM Base URL is invalid."
+    }
+    if ($RuntimeMode -eq "Docker") {
+        if ($mockUri.Scheme -ne "http" -or $mockUri.Host -ne "mock-llm" -or $mockUri.Port -ne 8101) {
+            throw "Docker runtime mode only permits the private mock-llm:8101 endpoint."
+        }
+    }
+    elseif ($mockUri.Scheme -ne "http" -or $mockUri.Host -notin @("127.0.0.1", "localhost", "::1") -or $mockUri.Port -ne 8101) {
+        throw "Local runtime mode only permits a loopback Mock LLM endpoint on port 8101."
+    }
     if (-not $CredentialPath) {
-        $CredentialPath = Join-Path $root ".local\first-run-credentials.txt"
+        $CredentialPath = if ($RuntimeMode -eq "Docker") {
+            Join-Path $root ".local\first-run-credentials.txt"
+        }
+        else {
+            Join-Path $root ".local\local-first-run-credentials.txt"
+        }
     }
     $credentials = Read-WgCredentials -Path $CredentialPath
+    Write-WgMessage -Message "Smoke runtime mode: $RuntimeMode; Mock LLM endpoint: $MockLlmBaseUrl"
 
     $healthBase = $ApiBase -replace "/api/v1/?$", ""
     $health = Invoke-RestMethod -Uri "$healthBase/health" -TimeoutSec 10
@@ -71,7 +100,7 @@ try {
     Assert-WgValue ($ready.database -eq "ok") "API readiness check did not confirm the database."
     $web = Invoke-WebRequest -UseBasicParsing -Uri $WebBase -TimeoutSec 10
     Assert-WgValue ($web.StatusCode -ge 200 -and $web.StatusCode -lt 400) "Web health check failed."
-    Write-Host "[1/11] API, database, and web health checks passed."
+    Write-WgMessage -Message "[1/12] API, database, and web health checks passed." -Color "Green"
 
     $login = Invoke-WgApi -Method POST -Path "/auth/login" -Body @{
         username = $credentials["username"]
@@ -85,7 +114,7 @@ try {
     }
     $me = Invoke-WgApi -Method GET -Path "/auth/me" -Headers $headers
     Assert-WgValue ($me.username -eq $credentials["username"]) "Authenticated user mismatch."
-    Write-Host "[2/11] Random first-run administrator login passed."
+    Write-WgMessage -Message "[2/12] Random first-run administrator login passed." -Color "Green"
 
     $stamp = [DateTime]::UtcNow.ToString("yyyyMMdd-HHmmss")
     $createdProject = Invoke-WgApi -Method POST -Path "/projects" -Headers $headers -Body @{
@@ -104,7 +133,7 @@ try {
     }
     Assert-WgValue ($scope.is_authorized -eq $true) "Scope authorization was not persisted."
     Assert-WgValue ($scope.target_value -eq "127.0.0.0/8") "Scope target mismatch."
-    Write-Host "[3/11] Project and authorized loopback scope creation passed."
+    Write-WgMessage -Message "[3/12] Project and authorized loopback scope creation passed." -Color "Green"
 
     $projects = Invoke-WgApi -Method GET -Path "/projects?page_size=100" -Headers $headers
     $demoProject = $projects.items | Where-Object { $_.name -eq "WhaleGuard Demo Lab" } | Select-Object -First 1
@@ -114,7 +143,7 @@ try {
     Assert-WgValue ($null -ne $suite) "Seeded demo test suite was not found."
     $cases = Invoke-WgApi -Method GET -Path "/test-suites/$($suite.id)/cases?page_size=100" -Headers $headers
     Assert-WgValue ($cases.total -eq 15) "The demo suite does not contain exactly 15 test cases."
-    Write-Host "[4/11] Seeded demo project and 15 safe test cases passed."
+    Write-WgMessage -Message "[4/12] Seeded demo project and 15 safe test cases passed." -Color "Green"
 
     $run = Invoke-WgApi -Method POST -Path "/runs" -Headers $headers -Body @{
         project_id = $demoProject.id
@@ -149,7 +178,7 @@ try {
     Assert-WgValue ($run.progress -eq 100) "Completed run progress is not 100."
     Assert-WgValue ($null -ne $run.security_score) "Completed run has no security score."
     Assert-WgValue ([bool]$run.score_explanation) "Completed run has no score explanation."
-    Write-Host "[5/11] Mock Agent run, $approvalCount approval guard decision(s), progress, and scoring passed."
+    Write-WgMessage -Message "[5/12] Mock Agent run, $approvalCount approval guard decision(s), progress, and scoring passed." -Color "Green"
 
     $results = Invoke-WgApi -Method GET -Path "/runs/$($run.id)/results?page_size=100" -Headers $headers
     Assert-WgValue ($results.total -eq 15) "Completed run does not contain 15 results."
@@ -157,13 +186,13 @@ try {
     Assert-WgValue ($findings.total -ge 1) "The run did not produce a Finding."
     $evidence = Invoke-WgApi -Method GET -Path "/evidence?project_id=$($demoProject.id)&run_id=$($run.id)&page_size=100" -Headers $headers
     Assert-WgValue ($evidence.total -eq 15) "The run did not persist one evidence item per case."
-    Write-Host "[6/11] Results, Finding, evidence, and hashes passed."
+    Write-WgMessage -Message "[6/12] Results, Finding, evidence, and hashes passed." -Color "Green"
 
     $model = Invoke-WgApi -Method POST -Path "/model-channels" -Headers $headers -Body @{
         project_id = $demoProject.id
         name = "Smoke OpenAI-compatible Mock $stamp"
         provider = "openai-compatible"
-        base_url = "http://127.0.0.1:8101/v1"
+        base_url = $MockLlmBaseUrl
         model = "whaleguard-safe-mock-1"
         timeout = 15
         max_tokens = 512
@@ -201,7 +230,7 @@ try {
     Assert-WgValue ($measuredResult.metrics.prompt_tokens -gt 0) "Model prompt token usage was not persisted."
     Assert-WgValue ($measuredResult.metrics.completion_tokens -gt 0) "Model completion token usage was not persisted."
     Assert-WgValue ($measuredResult.metrics.estimated_cost -ge 0) "Estimated cost was not persisted."
-    Write-Host "[7/11] OpenAI-compatible model target, connection test, usage, and explicit LLM Judge passed."
+    Write-WgMessage -Message "[7/12] OpenAI-compatible model target, connection test, usage, and explicit LLM Judge passed." -Color "Green"
 
     $servers = Invoke-WgApi -Method GET -Path "/mcp/servers?project_id=$($demoProject.id)&page_size=100" -Headers $headers
     $server = $servers.items | Select-Object -First 1
@@ -210,7 +239,7 @@ try {
     Assert-WgValue ($analysis.execution_performed -eq $false) "MCPShield unexpectedly executed a tool."
     Assert-WgValue ($analysis.tools.Count -eq 5) "MCPShield did not analyze five seeded tools."
     Assert-WgValue ($analysis.risk_score -ge 0 -and $analysis.risk_score -le 100) "MCP risk score is outside 0-100."
-    Write-Host "[8/11] MCPShield metadata-only analysis passed."
+    Write-WgMessage -Message "[8/12] MCPShield metadata-only analysis passed." -Color "Green"
 
     $report = Invoke-WgApi -Method POST -Path "/reports" -Headers $headers -Body @{
         project_id = $demoProject.id
@@ -229,24 +258,78 @@ try {
     $reportPath = Join-Path $localDir "smoke-report.html"
     Invoke-WebRequest -UseBasicParsing -Uri "$ApiBase/reports/$($report.id)/download?format=html" -Headers $headers -OutFile $reportPath -TimeoutSec 30
     Assert-WgValue ((Get-Item -LiteralPath $reportPath).Length -gt 500) "Downloaded HTML report is unexpectedly small."
-    Write-Host "[9/11] HTML, Markdown, and JSON report generation passed."
+    Write-WgMessage -Message "[9/12] HTML, Markdown, and JSON report generation passed." -Color "Green"
 
-    foreach ($requiredAction in @("auth.login", "project.create", "scope.create", "model_channel.create", "model_channel.test_connection", "test_run.create", "approval.decision", "mcp_server.analyze", "report.generate", "report.export")) {
+    if ($RuntimeMode -eq "Docker") {
+        $workerDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $workerResults = @()
+        $workerEvents = @()
+        do {
+            $run = Invoke-WgApi -Method GET -Path "/runs/$($run.id)" -Headers $headers
+            $workerEvents = @($run.event_log | Where-Object { $_.event -eq "evaluation.completed" })
+            $workerResults = @()
+            if (
+                $run.score_explanation -and
+                $run.score_explanation.PSObject.Properties.Name -contains "worker_results"
+            ) {
+                $workerResults = @($run.score_explanation.worker_results)
+            }
+            if ($workerEvents.Count -ge 15 -and $workerResults.Count -ge 15) { break }
+            Start-Sleep -Milliseconds 500
+        } while ([DateTime]::UtcNow -lt $workerDeadline)
+        Assert-WgValue ($workerEvents.Count -ge 15) "RQ worker callbacks did not complete all 15 evaluations."
+        Assert-WgValue ($workerResults.Count -ge 15) "RQ worker results were not persisted for all 15 cases."
+        Write-WgMessage -Message "[10/12] RQ worker consumed and returned all 15 queued evaluations." -Color "Green"
+    }
+    else {
+        Write-WgMessage -Message "[10/12] RQ worker proof skipped explicitly in Local runtime mode." -Level "WARN" -Color "Yellow"
+    }
+
+    $requiredActions = @("auth.login", "project.create", "scope.create", "model_channel.create", "model_channel.test_connection", "test_run.create", "approval.decision", "mcp_server.analyze", "report.generate", "report.export")
+    if ($RuntimeMode -eq "Docker") { $requiredActions += "worker.evaluation_callback" }
+    $auditEvidence = @()
+    foreach ($requiredAction in $requiredActions) {
         $encodedAction = [Uri]::EscapeDataString($requiredAction)
         $audit = Invoke-WgApi -Method GET -Path "/audit-logs?action=$encodedAction&page_size=1" -Headers $headers
         Assert-WgValue ($audit.total -ge 1) "Required audit action is missing: $requiredAction"
+        $auditEvidence += [ordered]@{
+            id = [string]$audit.items[0].id
+            action = $requiredAction
+        }
     }
-    Write-Host "[10/11] Required immutable audit trail entries passed."
+    Write-WgMessage -Message "[11/12] Required immutable audit trail entries passed." -Color "Green"
 
     $events = @($run.event_log | ForEach-Object { $_.event })
     Assert-WgValue ($events -contains "run.waiting_approval") "Run event stream lacks waiting_approval evidence."
     Assert-WgValue ($events -contains "approval.approved") "Run event stream lacks approval evidence."
     Assert-WgValue ($events -contains "run.completed") "Run event stream lacks completion evidence."
-    Write-Host "[11/11] Event lifecycle passed."
-    Write-Host "SMOKE_TEST_OK agent_run_id=$($run.id) model_run_id=$($modelRun.id) report_id=$($report.id) report=$reportPath"
+    Write-WgMessage -Message "[12/12] Event lifecycle passed." -Color "Green"
+
+    $finding = $findings.items | Select-Object -First 1
+    Assert-WgValue ($null -ne $finding) "No Finding is available for the persistence checkpoint."
+    $reportHash = (Get-FileHash -LiteralPath $reportPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $checkpoint = [ordered]@{
+        schema_version = 1
+        created_at = [DateTime]::UtcNow.ToString("o")
+        project_id = [string]$createdProject.id
+        run_id = [string]$run.id
+        expected_result_count = 15
+        finding_id = [string]$finding.id
+        report_id = [string]$report.id
+        report_sha256 = $reportHash
+        audit_entries = @($auditEvidence)
+    }
+    $checkpointPath = Join-Path $localDir "docker-persistence-checkpoint.json"
+    $checkpointTemporaryPath = "$checkpointPath.tmp"
+    $checkpoint | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $checkpointTemporaryPath -Encoding UTF8
+    Move-Item -LiteralPath $checkpointTemporaryPath -Destination $checkpointPath -Force
+    Write-WgMessage -Message "Persistence checkpoint: $checkpointPath"
+    Write-WgMessage -Message "SMOKE_TEST_OK agent_run_id=$($run.id) model_run_id=$($modelRun.id) report_id=$($report.id) report=$reportPath" -Color "Green"
+    Write-WgMessage -Message "Operation log: $(Get-WgOperationLogPath)"
     exit 0
 }
 catch {
-    Write-Error "SMOKE_TEST_FAILED: $($_.Exception.Message)"
+    Write-WgMessage -Message "SMOKE_TEST_FAILED: $($_.Exception.Message)" -Level "ERROR" -Color "Red"
+    Write-WgMessage -Message "Operation log: $(Get-WgOperationLogPath)" -Level "ERROR"
     exit 1
 }

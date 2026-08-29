@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+import os
+
+from redis import Redis
+from rq import Worker
+from rq.serializers import JSONSerializer
+
+_RUNNING_STATES = frozenset({"started", "idle", "busy"})
+
+
+def worker_is_healthy(connection: Redis, worker_name: str, queue_name: str) -> bool:
+    """Return true only for a live RQ registration on the configured queue.
+
+    Redis connectivity alone is insufficient: the worker must have registered
+    its birth, published a heartbeat with a positive TTL, and be listening on
+    the same queue used by the API.
+    """
+
+    worker_key = f"{Worker.redis_worker_namespace_prefix}{worker_name}"
+    worker = Worker.find_by_key(
+        worker_key,
+        connection=connection,
+        serializer=JSONSerializer,
+    )
+    if worker is None:
+        return False
+    if worker.get_state() not in _RUNNING_STATES:
+        return False
+    if worker.last_heartbeat is None or connection.ttl(worker.key) <= 0:
+        return False
+    return queue_name in worker.queue_names()
+
+
+def main() -> int:
+    try:
+        connection = Redis.from_url(
+            os.getenv("REDIS_URL", "redis://redis:6379/0"),
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        healthy = worker_is_healthy(
+            connection,
+            os.getenv("WORKER_NAME", "whaleguard-worker"),
+            os.getenv("RQ_QUEUE", "whaleguard"),
+        )
+    except Exception:
+        healthy = False
+    return 0 if healthy else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

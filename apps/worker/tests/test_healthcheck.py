@@ -1,0 +1,71 @@
+from datetime import UTC, datetime
+
+from rq.serializers import JSONSerializer
+from whaleguard_worker import healthcheck
+
+
+class FakeWorker:
+    key = "rq:worker:whaleguard-worker"
+    last_heartbeat = datetime.now(UTC)
+
+    def __init__(self, state: str = "idle", queues: tuple[str, ...] = ("whaleguard",)):
+        self._state = state
+        self._queues = queues
+
+    def get_state(self) -> str:
+        return self._state
+
+    def queue_names(self) -> list[str]:
+        return list(self._queues)
+
+
+class FakeConnection:
+    def __init__(self, ttl: int = 480):
+        self.worker_ttl = ttl
+
+    def ttl(self, _key: str) -> int:
+        return self.worker_ttl
+
+
+def test_healthcheck_requires_registered_worker_on_expected_queue(monkeypatch):
+    captured = {}
+    worker = FakeWorker()
+
+    def find_by_key(key, **kwargs):
+        captured["key"] = key
+        captured.update(kwargs)
+        return worker
+
+    monkeypatch.setattr(healthcheck.Worker, "find_by_key", find_by_key)
+    connection = FakeConnection()
+
+    assert healthcheck.worker_is_healthy(connection, "whaleguard-worker", "whaleguard")
+    assert captured["key"] == "rq:worker:whaleguard-worker"
+    assert captured["connection"] is connection
+    assert captured["serializer"] is JSONSerializer
+
+
+def test_healthcheck_rejects_missing_stale_suspended_or_wrong_queue_worker(monkeypatch):
+    connection = FakeConnection()
+
+    monkeypatch.setattr(healthcheck.Worker, "find_by_key", lambda *_args, **_kwargs: None)
+    assert not healthcheck.worker_is_healthy(connection, "whaleguard-worker", "whaleguard")
+
+    for worker in (
+        FakeWorker(state="suspended"),
+        FakeWorker(queues=("other",)),
+    ):
+        monkeypatch.setattr(
+            healthcheck.Worker,
+            "find_by_key",
+            lambda *_args, _worker=worker, **_kwargs: _worker,
+        )
+        assert not healthcheck.worker_is_healthy(connection, "whaleguard-worker", "whaleguard")
+
+    stale_connection = FakeConnection(ttl=-1)
+    monkeypatch.setattr(
+        healthcheck.Worker,
+        "find_by_key",
+        lambda *_args, **_kwargs: FakeWorker(),
+    )
+    assert not healthcheck.worker_is_healthy(stale_connection, "whaleguard-worker", "whaleguard")

@@ -6,60 +6,47 @@ param(
 . (Join-Path $PSScriptRoot "whaleguard-common.ps1")
 $root = Get-WgRoot
 $exitCode = 0
+$null = Start-WgOperationLog -Name "start"
 Push-Location $root
 try {
-    Write-Host "[1/5] Checking Docker Desktop..." -ForegroundColor Cyan
+    Write-WgMessage -Message "[1/5] Checking the local Docker Desktop engine..." -Color "Cyan"
     $null = Assert-WgDockerEngine
-    Write-Host "[2/5] Preparing persistent local secrets..." -ForegroundColor Cyan
+    Write-WgMessage -Message "[2/5] Preparing persistent local secrets..." -Color "Cyan"
     $null = Ensure-WgEnvironment
-    Write-Host "[3/5] Validating Compose configuration..." -ForegroundColor Cyan
+    Write-WgMessage -Message "[3/5] Validating Compose configuration..." -Color "Cyan"
     Invoke-WgCompose config --quiet
-    Write-Host "[4/5] Building and starting WhaleGuard..." -ForegroundColor Cyan
+    Write-WgMessage -Message "[4/5] Building and starting WhaleGuard..." -Color "Cyan"
     Invoke-WgCompose up -d --build
 
     $apiPort = Get-WgEnvValue -Name "API_PORT" -Default "8000"
     $webPort = Get-WgEnvValue -Name "WEB_PORT" -Default "3000"
-    $apiUrl = "http://127.0.0.1:$apiPort/health"
     $webUrl = "http://127.0.0.1:$webPort"
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    Write-Host "[5/5] Waiting for API and Web health..." -ForegroundColor Cyan
-    do {
-        $apiReady = Test-WgHttp -Uri $apiUrl
-        $webReady = Test-WgHttp -Uri $webUrl
-        if ($apiReady -and $webReady) { break }
-        Start-Sleep -Seconds 3
-    } while ((Get-Date) -lt $deadline)
-
+    Write-WgMessage -Message "[5/5] Waiting for all eight services and API readiness..." -Color "Cyan"
+    $null = Wait-WgStackHealthy -ApiPort ([int]$apiPort) -WebPort ([int]$webPort) -TimeoutSeconds $TimeoutSeconds
     Invoke-WgCompose ps
-    if (-not ($apiReady -and $webReady)) {
-        throw "Services did not become healthy within $TimeoutSeconds seconds."
-    }
 
     $credentials = Join-Path $root ".local\first-run-credentials.txt"
-    Write-Host ""
-    Write-Host "WhaleGuard is ready." -ForegroundColor Green
-    Write-Host "Web:  $webUrl"
-    Write-Host "API:  http://127.0.0.1:$apiPort/docs"
+    Write-WgMessage -Message ""
+    Write-WgMessage -Message "WhaleGuard is ready. All eight services are healthy." -Color "Green"
+    Write-WgMessage -Message "Web:  $webUrl"
+    Write-WgMessage -Message "API:  http://127.0.0.1:$apiPort/docs"
     if (Test-Path -LiteralPath $credentials) {
-        Write-Host "First-run credentials: $credentials" -ForegroundColor Yellow
+        Write-WgMessage -Message "First-run credentials: $credentials" -Color "Yellow"
     }
     else {
-        Write-Warning "Credential file not present. This usually means the database was initialized earlier."
-        Write-Host "Check API startup logs with: docker compose logs api"
+        Write-WgMessage -Message "Credential file not present. The database may have been initialized earlier." -Level "WARN" -Color "Yellow"
+        Write-WgMessage -Message "Check the redacted API startup logs for the credential file path."
     }
+    Write-WgMessage -Message "Operation log: $(Get-WgOperationLogPath)"
     if (-not $NoBrowser) {
         Start-Process $webUrl
     }
 }
 catch {
     $exitCode = 1
-    Write-Host "START FAILED: $($_.Exception.Message)" -ForegroundColor Red
-    try {
-        Write-Host "Recent service state and logs:" -ForegroundColor Yellow
-        & (Get-WgDocker) compose ps
-        & (Get-WgDocker) compose logs --tail 80 api web worker
-    }
-    catch { }
+    Write-WgMessage -Message "START FAILED: $($_.Exception.Message)" -Level "ERROR" -Color "Red"
+    Write-WgComposeDiagnostics -Tail 80
+    Write-WgMessage -Message "Operation log: $(Get-WgOperationLogPath)" -Level "ERROR"
 }
 finally {
     Pop-Location

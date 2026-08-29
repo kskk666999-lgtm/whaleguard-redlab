@@ -101,6 +101,59 @@ def main() -> None:
         raise SystemExit("api: RQ_QUEUE must use the shared Compose setting")
     if worker_environment.get("RQ_QUEUE") != expected_queue:
         raise SystemExit("worker: RQ_QUEUE must use the shared Compose setting")
+    worker_healthcheck = services["worker"].get("healthcheck", {})
+    worker_health_command = " ".join(str(item) for item in worker_healthcheck.get("test", []))
+    if "whaleguard_worker.healthcheck" not in worker_health_command:
+        raise SystemExit("worker: healthcheck must verify the live RQ worker registration")
+
+    build_contexts = {
+        (ROOT / service["build"]["context"]).resolve()
+        for service in services.values()
+        if isinstance(service.get("build"), dict)
+    }
+    common_context_exclusions = (
+        ".env",
+        ".local",
+        ".venv",
+        "*.db",
+        "*.exe",
+        "*.msi",
+        "*.zip",
+    )
+    for context in build_contexts:
+        dockerignore_path = context / ".dockerignore"
+        if not dockerignore_path.is_file():
+            raise SystemExit(f"build context is missing .dockerignore: {context}")
+        dockerignore = dockerignore_path.read_text(encoding="utf-8")
+        for forbidden_context_path in common_context_exclusions:
+            if forbidden_context_path not in dockerignore:
+                raise SystemExit(
+                    f"{context}: build context must ignore sensitive/generated path "
+                    f"{forbidden_context_path}"
+                )
+
+    root_dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+    for forbidden_context_path in (".git", "**/node_modules", "**/.next"):
+        if forbidden_context_path not in root_dockerignore:
+            raise SystemExit(
+                f"root build context must ignore sensitive/generated path: {forbidden_context_path}"
+            )
+    web_dockerignore = (ROOT / "apps" / "web" / ".dockerignore").read_text(encoding="utf-8")
+    for generated_web_path in ("node_modules", ".next"):
+        if generated_web_path not in web_dockerignore:
+            raise SystemExit(f"web build context must ignore generated path: {generated_web_path}")
+    if "reports" in {
+        line.strip().rstrip("/")
+        for line in web_dockerignore.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }:
+        raise SystemExit("web build context cannot ignore the app/(console)/reports source route")
+
+    api_dockerfile = (ROOT / "apps" / "api" / "Dockerfile").read_text(encoding="utf-8")
+    if "COPY apps/api /app/apps/api" in api_dockerfile:
+        raise SystemExit("api: broad source copy can embed ignored local state in the image")
+    if "/app/data/reports" not in api_dockerfile:
+        raise SystemExit("api: reports volume target must be created with non-root ownership")
     print(f"validated {len(services)} compose services and private-network invariants")
 
 

@@ -119,10 +119,11 @@ services:
         condition: service_healthy
     networks: [backend]
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; from redis import Redis; Redis.from_url(os.environ['REDIS_URL']).ping()"]
+      test: ["CMD", "python", "-m", "whaleguard_worker.healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 10s
 
   web:
     <<: *app-security

@@ -5,14 +5,26 @@
 WhaleGuard 把 LLM/Agent 测试、MCP 元数据风险分析、Scope Guard、证据链、Finding 与多格式报告放在一套可审计的本地平台中。默认中文界面，内置演示目标均在 Docker 私有网络中，任何网络测试都必须先经过授权范围与审批策略。
 
 > [!IMPORTANT]
-> 当前发布证据已覆盖本地 SQLite/回环 Mock 的完整产品流程，但最后一次验证主机没有 Docker 运行时和 WSL2 后端，八服务 build/up 与重启持久化尚未执行。请勿把 `docker compose config` 通过理解为容器运行通过；精确状态见 [FINAL_STATUS.md](FINAL_STATUS.md)。
+> 当前发布证据已覆盖本地 SQLite/回环 Mock 的完整产品流程，但 Docker 发布门禁仍为 BLOCKED。验证主机是 Windows 11 Home 23H2 build 22631，并安装 VirtualBox 5.2.30，均未通过当前一键安装兼容门禁；首轮 UAC 已接受，但 WSL web-download 返回 HTTP 403，VMP 仅暂存、尚未重启、没有自动续作入口，Docker 也未安装。因此八服务 build/up、Docker smoke 与重启持久化均未执行。请勿把 VMP 暂存或 `docker compose config` 通过理解为容器运行通过；精确状态见 [FINAL_STATUS.md](FINAL_STATUS.md)。
 
 > [!WARNING]
 > 本项目不提供 C2、WebShell、恶意载荷、凭据窃取、爆破、持久化、免杀、任意 Shell、未授权公网扫描或自动利用。只能用于你拥有或已取得明确授权的系统。
 
 ## 快速启动
 
-要求：Docker Engine 24+ / Docker Desktop、Compose v2、至少 4 GB 可用内存。
+### Windows 11 首次安装
+
+先升级到项目当前兼容门禁允许的 Windows 构建，并升级或卸载 VirtualBox 5.2.30 等不兼容版本，然后双击：
+
+```powershell
+.\INSTALL_WHALEGUARD_DOCKER.bat
+```
+
+入口先做宿主兼容预检，通过后申请一次 UAC；它不会自动重启。只有提升阶段成功完成且确实需要重启时才会注册当前用户 Startup 中有三次硬上限的一次性快捷方式，登录后自动续作；手工恢复入口为 `RESUME_AFTER_REBOOT.bat`。流程会验证 WSL、Docker 官方安装器与同根 Desktop/CLI/Compose 签名、隔离的本地 Docker context、Linux containers 和 `hello-world`，再构建并验证 WhaleGuard、真实 RQ 消费及 `restart`/`down-up` 数据持久化。已有符合安全门禁的当前用户 Docker Desktop 可直接双击 `START_WHALEGUARD.bat`。详见 [第一次运行指南](RUN_ME_FIRST.md)。
+
+### Linux / WSL2
+
+要求：Docker Engine 24+、Compose v2、至少 4 GB 可用内存。
 
 ```bash
 python scripts/bootstrap_env.py
@@ -31,7 +43,7 @@ docker compose up --build
 cat .local/first-run-credentials.txt
 ```
 
-Windows 用户可直接双击 `START_WHALEGUARD.bat`，然后按终端显示的路径打开该文件。请限制凭据文件的访问范围；重置演示环境时会随机轮换密码。仓库和演示数据中不包含固定管理员密码或真实 API Key。
+Windows 首次 `.env` 由 Windows PowerShell 5.1 和系统加密随机数生成器原子创建，Docker 启动路径不要求宿主机安装 Python/Node。脚本默认拒绝远程 Docker context 和 Bake/Buildx 覆盖，并使用仓库路径哈希隔离 Compose 资源；安装/升级不会全局关闭 WSL，也不会在检测到活动 Docker 工作负载时继续。启动会等待全部 8 个服务 healthy 并检查数据库 readiness；脱敏运行日志位于 `.local/logs/`，安装日志位于 `.local/setup-logs/`。请限制凭据文件的访问范围；重置演示环境时会随机轮换密码。仓库和演示数据中不包含固定管理员密码或真实 API Key。
 
 Linux/WSL 用户若 `id -u` 或 `id -g` 不是 `1000`，应在生成 `.env` 后把 `WHALEGUARD_APP_UID` / `WHALEGUARD_APP_GID` 改为当前非 root 用户的实际 UID/GID，再执行 `docker compose up --build`，否则 API 容器可能无法写入宿主机的 `.local` 目录。详见对应部署文档。
 
