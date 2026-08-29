@@ -1,6 +1,6 @@
 # WhaleGuard AI RedLab 通宵续作进度
 
-最近更新：2026-08-30 06:07 +08:00
+最近更新：2026-08-30 06:12 +08:00
 
 ## 结论
 
@@ -34,9 +34,9 @@
 | 检查 | 结果 |
 |---|---|
 | 前一稳定检查点的本机产品链路 | SQLite/回环 Mock 的迁移、API、前端、浏览器和端到端 smoke 均有通过证据；旧数字不作为本轮最终计数 |
-| Windows 脚本专项 | 32 passed；当前 12 个 PowerShell 脚本通过 Windows PowerShell 5.1 与 PowerShell 7 解析 |
+| Windows 脚本专项 | 33 passed；当前 12 个 PowerShell 脚本通过 Windows PowerShell 5.1 与 PowerShell 7 解析 |
 | Ruff / 脚本文档链接 | 通过 |
-| 本轮代码回归 | **136 passed，0 failed**：Python 90 + Windows 32 + 前端组件 11 + Playwright 3 |
+| 本轮代码回归 | **137 passed，0 failed**：Python 90 + Windows 33 + 前端组件 11 + Playwright 3 |
 | Alembic / Next.js | 23 张表 upgrade/downgrade/upgrade；Next.js 16.3.3 生产构建 20 路由，均通过 |
 | Compose 官方 CLI `config --quiet` | v5.5.0 退出码 0，SHA-256 与官方 release checksum 一致；仅代表静态解析 |
 | Windows 一键安装现场 | 首轮 UAC 已接受；WSL web-download HTTP 403；VMP 仅暂存；未重启；无自动续作入口；Docker 未安装 |

@@ -581,6 +581,23 @@ exit 0
     assert result.returncode == 0, result.stderr + result.stdout
 
 
+def test_trusted_path_rejects_junction_ancestors(tmp_path: Path) -> None:
+    real_directory = tmp_path / "real"
+    junction = tmp_path / "junction"
+    real_directory.mkdir()
+    trusted_file = real_directory / "trusted.exe"
+    trusted_file.write_bytes(b"test fixture")
+    source = f"""
+. {ps_quote(COMMON)}
+New-Item -ItemType Junction -Path {ps_quote(junction)} -Target {ps_quote(real_directory)} | Out-Null
+try {{ Assert-WgNoReparsePointInPath -Path {ps_quote(junction / "trusted.exe")}; exit 2 }}
+catch {{ if ($_.Exception.Message -notmatch 'reparse point') {{ exit 3 }} }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
 def test_docker_desktop_cim_failure_is_fail_closed() -> None:
     source = f"""
 . {ps_quote(COMMON)}

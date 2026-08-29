@@ -1,12 +1,12 @@
 # WhaleGuard AI RedLab 最终状态
 
-更新时间：2026-08-30 06:07 +08:00（Asia/Shanghai）
+更新时间：2026-08-30 06:12 +08:00（Asia/Shanghai）
 
 > **验收状态：本地进程链路已验证；Docker 发布门禁仍为 BLOCKED。** 当前验证主机没有 Docker CLI、Docker Engine、Docker Desktop、远程 Docker context 或可用 WSL2 后端，因此不能把 Compose 配置校验表述成八容器运行通过。
 
 ## 交付结论
 
-WhaleGuard AI RedLab 的代码层和本地进程产品链路已经完成。前一稳定检查点已用本地 SQLite、受限内联任务后端和三个回环 Mock 服务实际完成登录、项目/Scope、15 用例 Agent 测试、人工审批、Finding、证据、模型适配、LLM Judge、MCPShield、审计及三种报告的端到端闭环。本轮代码回归共 136 项自动化测试通过；完整 Docker 产品运行链路尚未验收，当前不能宣称“全部完成”。
+WhaleGuard AI RedLab 的代码层和本地进程产品链路已经完成。前一稳定检查点已用本地 SQLite、受限内联任务后端和三个回环 Mock 服务实际完成登录、项目/Scope、15 用例 Agent 测试、人工审批、Finding、证据、模型适配、LLM Judge、MCPShield、审计及三种报告的端到端闭环。本轮代码回归共 137 项自动化测试通过；完整 Docker 产品运行链路尚未验收，当前不能宣称“全部完成”。
 
 安全边界保持不变：平台只用于本地、自有或明确授权目标；不包含 C2、WebShell、爆破、凭据窃取、恶意 Payload、持久化、规避、任意 Shell、未授权公网扫描或自动利用。
 
@@ -126,7 +126,7 @@ Docker 中的三个 Mock 服务只位于私有 arena 网络，不发布宿主端
 ## 测试结果
 
 - 前一稳定检查点：本地 SQLite/回环 Mock 的数据库迁移、API、前端构建、浏览器流程和完整产品烟测均有实际通过证据；具体旧数字不作为本轮最终代码点计数。
-- 本轮完整代码回归：**136 passed，0 failed**（Python 后端/策略/Worker/Mock 90 + Windows 自动化 32 + 前端组件 11 + Playwright 3）；Windows PowerShell 5.1 统一验证退出码 0。
+- 本轮完整代码回归：**137 passed，0 failed**（Python 后端/策略/Worker/Mock 90 + Windows 自动化 33 + 前端组件 11 + Playwright 3）；Windows PowerShell 5.1 统一验证退出码 0。
 - 数据库与构建：Alembic upgrade/downgrade/upgrade 创建并核对 23 张表；Ruff、前端 ESLint、TypeScript、Next.js 16.3.3 生产构建的 20 个路由全部通过。
 - PowerShell：当前 12 个脚本同时通过 Windows PowerShell 5.1 与 PowerShell 7 解析；安装器在 build 22631 上于 UAC 前按预期 fail closed。
 - Compose 静态解析：官方独立 Compose v5.5.0 `config --quiet` 退出码 0，其 SHA-256 与 Docker 官方 release checksum 一致；仓库 8 服务安全不变量检查通过；本轮 Docker build/up 未运行。

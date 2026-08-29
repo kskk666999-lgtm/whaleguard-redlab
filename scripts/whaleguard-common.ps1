@@ -28,6 +28,21 @@ function Get-WgWindowsSystemExecutable {
     return $candidate
 }
 
+function Assert-WgNoReparsePointInPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $resolvedPath = [IO.Path]::GetFullPath($Path)
+    try { $item = Get-Item -LiteralPath $resolvedPath -Force -ErrorAction Stop }
+    catch { throw "A trusted path component could not be inspected: $resolvedPath" }
+    while ($null -ne $item) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "A trusted path cannot contain a symbolic link, junction, or other reparse point."
+        }
+        if ($item -is [IO.FileInfo]) { $item = $item.Directory }
+        else { $item = $item.Parent }
+    }
+}
+
 function Assert-WgContainerHostCompatibility {
     try {
         $operatingSystem = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
@@ -269,14 +284,7 @@ function Get-WgDockerDesktopWslBackendEvidence {
         throw "Docker Desktop settings-store.json was not found; WSL2 backend cannot be proven."
     }
     $settingsPath = [IO.Path]::GetFullPath($settingsPath)
-    $settingsDirectory = Get-Item -LiteralPath (Split-Path $settingsPath -Parent)
-    $settingsItem = Get-Item -LiteralPath $settingsPath
-    if (
-        (($settingsDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
-        (($settingsItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
-    ) {
-        throw "Docker Desktop settings path cannot contain a reparse-point directory or file."
-    }
+    Assert-WgNoReparsePointInPath -Path $settingsPath
     try { $settings = Get-Content -Raw -LiteralPath $settingsPath | ConvertFrom-Json }
     catch { throw "Docker Desktop settings could not be parsed; WSL2 backend cannot be proven." }
     function Read-BooleanSetting {
@@ -608,10 +616,8 @@ function Get-WgDockerBinaryEvidence {
     if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
         throw "Docker $Kind binary was not found at its canonical path."
     }
+    Assert-WgNoReparsePointInPath -Path $resolvedPath
     $item = Get-Item -LiteralPath $resolvedPath
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Docker $Kind binary cannot be a symbolic link or reparse point."
-    }
     $signature = Get-AuthenticodeSignature -LiteralPath $resolvedPath
     $signerSubject = if ($signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { "" }
     $productName = [string]$item.VersionInfo.ProductName
@@ -758,6 +764,7 @@ function Get-WgTrustedDockerPluginConfig {
     else {
         New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
     }
+    Assert-WgNoReparsePointInPath -Path $configDirectory
     $priorityPluginDirectory = Join-Path $configDirectory "cli-plugins"
     if (Test-Path -LiteralPath $priorityPluginDirectory) {
         throw "The managed Docker config contains a higher-priority cli-plugins path; refusing possible plugin shadowing."

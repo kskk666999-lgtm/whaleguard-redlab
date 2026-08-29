@@ -4,7 +4,7 @@
 
 ## 当前验证主机状态
 
-当前主机是 Windows 11 家庭中文版 23H2 build 22631，并安装了 VirtualBox 5.2.30。两者均未通过仓库当前的一键安装兼容门禁。首轮 UAC 已接受，但 WSL web-download 返回 HTTP 403；VirtualMachinePlatform 仅暂存、尚未重启，没有注册自动续作入口，Docker CLI/Desktop/Engine 也未安装。因此当前主机尚未运行 Docker build/up、产品 smoke 或持久化测试。代码侧 136 项自动化回归已通过，但不能替代 Docker 运行证据。
+当前主机是 Windows 11 家庭中文版 23H2 build 22631，并安装了 VirtualBox 5.2.30。两者均未通过仓库当前的一键安装兼容门禁。首轮 UAC 已接受，但 WSL web-download 返回 HTTP 403；VirtualMachinePlatform 仅暂存、尚未重启，没有注册自动续作入口，Docker CLI/Desktop/Engine 也未安装。因此当前主机尚未运行 Docker build/up、产品 smoke 或持久化测试。代码侧 137 项自动化回归已通过，但不能替代 Docker 运行证据。
 
 请先升级 Windows，并升级或卸载 VirtualBox 5.2.30。不要绕过门禁，也不要把 VMP 已暂存当作 WSL2/Docker 已可用。
 
