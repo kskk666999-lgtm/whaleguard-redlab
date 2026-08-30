@@ -34,6 +34,57 @@ def test_automatic_resume_is_current_user_crash_safe_and_bounded() -> None:
     assert "Register-WgAutomaticResume" not in resume
 
 
+def test_system_upgrade_resume_uses_exact_bounded_current_user_runonce() -> None:
+    resume = (ROOT / "scripts" / "resume-after-system-upgrade.ps1").read_text(encoding="utf-8")
+
+    assert '$runOnceName = "WhaleGuardSetupResume"' in resume
+    assert '$runOncePath = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"' in resume
+    assert "New-ItemProperty -Path $runOncePath -Name $runOnceName" in resume
+    assert "Get-WgWindowsSystemExecutable" in resume
+    assert ' -File "{1}" -AutoResume' in resume
+    assert "$maximumResumeAttempts = 2" in resume
+    assert "$maximumSameFailures = 2" in resume
+    assert "resume_attempt -ge $maximumResumeAttempts" in resume
+    assert "resume_attempt -lt $maximumResumeAttempts" in resume
+    assert "same_failure_count -ge $maximumSameFailures" in resume
+    assert "same_failure_count -lt $maximumSameFailures" in resume
+    assert "Remove-SystemUpgradeRunOnce" in resume
+    assert "ScheduledTask" not in resume
+    assert "schtasks" not in resume.lower()
+    assert "SpecialFolder]::Startup" not in resume
+
+
+def test_system_upgrade_resume_fails_closed_on_old_build_and_only_hands_off() -> None:
+    resume = (ROOT / "scripts" / "resume-after-system-upgrade.ps1").read_text(encoding="utf-8")
+
+    old_build = resume.split("if ($buildNumber -lt 26100)", 1)[1].split(
+        '$currentPhase = "handoff-to-docker-wsl-setup"', 1
+    )[0]
+    assert "Remove-SystemUpgradeRunOnce" not in old_build
+    assert 'FailureCode "unsupported-windows-build"' in old_build
+    assert "no update, bypass, install, or retry was attempted" in old_build
+    assert "Set-SystemUpgradeRunOnce" not in old_build
+
+    handoff = resume.split('$currentPhase = "handoff-to-docker-wsl-setup"', 1)[1]
+    assert '"setup-whaleguard-docker.ps1"' in resume
+    assert "Start-Process -FilePath $powershellExe" in handoff
+    assert "-Verb RunAs" not in resume
+    assert "Enable-Feature" not in resume
+    assert "wsl --install" not in resume
+    assert "Windows Update" not in resume
+
+
+def test_manual_resume_batch_dispatches_system_upgrade_state_first() -> None:
+    batch = (ROOT / "RESUME_AFTER_REBOOT.bat").read_text(encoding="utf-8")
+
+    assert 'if exist "%~dp0.local\\system-upgrade-resume-state.json"' in batch
+    assert 'resume-after-system-upgrade.ps1" -AutoResume' in batch
+    assert 'resume-whaleguard-docker-setup.ps1"' in batch
+    assert batch.index("resume-after-system-upgrade.ps1") < batch.index(
+        "resume-whaleguard-docker-setup.ps1"
+    )
+
+
 def test_resume_stops_owned_compose_stack_before_local_dev_processes() -> None:
     resume = (ROOT / "scripts" / "resume-whaleguard-docker-setup.ps1").read_text(encoding="utf-8")
 
