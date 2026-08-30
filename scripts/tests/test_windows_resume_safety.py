@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
+POWERSHELL = shutil.which("powershell.exe")
 
 
 def test_automatic_resume_is_current_user_crash_safe_and_bounded() -> None:
@@ -38,12 +45,14 @@ def test_system_upgrade_resume_uses_exact_bounded_current_user_runonce() -> None
     resume = (ROOT / "scripts" / "resume-after-system-upgrade.ps1").read_text(encoding="utf-8")
 
     assert '$runOnceName = "WhaleGuardSetupResume"' in resume
+    assert "$stateSchemaVersion = 3" in resume
     assert '$runOncePath = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"' in resume
     assert "New-ItemProperty -Path $runOncePath -Name $runOnceName" in resume
     assert "Get-WgWindowsSystemExecutable" in resume
     assert ' -File "{1}" -AutoResume' in resume
     assert "$maximumResumeAttempts = 2" in resume
     assert "$maximumSameFailures = 2" in resume
+    assert '"Global\\WhaleGuardSystemUpgradeResume"' in resume
     assert "resume_attempt -ge $maximumResumeAttempts" in resume
     assert "resume_attempt -lt $maximumResumeAttempts" in resume
     assert "same_failure_count -ge $maximumSameFailures" in resume
@@ -54,24 +63,69 @@ def test_system_upgrade_resume_uses_exact_bounded_current_user_runonce() -> None
     assert "SpecialFolder]::Startup" not in resume
 
 
-def test_system_upgrade_resume_fails_closed_on_old_build_and_only_hands_off() -> None:
+def test_system_upgrade_resume_requires_committed_25h2_and_only_hands_off() -> None:
     resume = (ROOT / "scripts" / "resume-after-system-upgrade.ps1").read_text(encoding="utf-8")
 
-    old_build = resume.split("if ($buildNumber -lt 26100)", 1)[1].split(
+    assert '$targetWindowsDisplayVersion = "25H2"' in resume
+    assert "$minimumTargetWindowsBuild = 26200" in resume
+    assert '$targetWindowsUpdateId = "6a8c4c24-0dd2-46b9-9d8f-bd7a84ec5ad4"' in resume
+    assert "$updateSearcher.Online = $false" in resume
+    assert "Search(\"IsInstalled=1 and UpdateID='$targetWindowsUpdateId'\")" in resume
+    assert 'ClientApplicationID = "WhaleGuardSystemUpgradeResume"' in resume
+    assert "TargetUpdateSearchResultCode -eq 2" in resume
+    assert "UptimeMinutes -ge 15" in resume
+    assert "TargetUpdateCount -eq 1" in resume
+    assert "TargetUpdateInstalled" in resume
+    assert "TargetUpdateRebootRequired" in resume
+    assert "TargetHistoryOperation -eq 1" in resume
+    assert "TargetHistoryResultCode -eq 2" in resume
+    assert "WindowsUpdateRebootPending" in resume
+    assert "ComponentServicingRebootPending" in resume
+    assert "ComponentServicingRebootInProgress" in resume
+    assert "PendingFileRenameOperations" in resume
+    assert "UpdateExeVolatile" in resume
+    assert "WindowsUpdateOOBEInProgress" in resume
+    assert "AcceleratedInstallRequired" in resume
+    assert "MoSetupRollbackMode" in resume
+    for process_name in (
+        "SetupHost.exe",
+        "SetupPlatform.exe",
+        "SetupPrep.exe",
+        "ModernSetupHost.exe",
+        "WindowsUpdateBox.exe",
+        "Windows11InstallationAssistant.exe",
+        "Windows10UpgraderApp.exe",
+        "MoUsoCoreWorker.exe",
+        "TiWorker.exe",
+        "TrustedInstaller.exe",
+        "UsoClient.exe",
+    ):
+        assert process_name in resume
+
+    not_committed = resume.split("if (-not $targetCommitted)", 1)[1].split(
         '$currentPhase = "handoff-to-docker-wsl-setup"', 1
     )[0]
-    assert "Remove-SystemUpgradeRunOnce" not in old_build
-    assert 'FailureCode "unsupported-windows-build"' in old_build
-    assert "no update, bypass, install, or retry was attempted" in old_build
-    assert "Set-SystemUpgradeRunOnce" not in old_build
+    assert 'phase = "waiting-windows-postreboot"' in not_committed
+    assert "no update, bypass, WSL, Docker, install, or retry was attempted" in not_committed
+    assert "Set-SystemUpgradeRunOnce" not in not_committed
 
     handoff = resume.split('$currentPhase = "handoff-to-docker-wsl-setup"', 1)[1]
+    assert 'phase = "windows-25h2-committed"' in handoff
+    assert resume.count("Get-Windows25H2CommitEvidence") >= 3
+    assert resume.index("$finalCommitEvidence = Get-Windows25H2CommitEvidence") < resume.index(
+        '$currentPhase = "handoff-to-docker-wsl-setup"'
+    )
+    assert resume.index("$state.resume_attempt = [int]$state.resume_attempt + 1") > resume.index(
+        "$finalCommitEvidence = Get-Windows25H2CommitEvidence"
+    )
     assert '"setup-whaleguard-docker.ps1"' in resume
     assert "Start-Process -FilePath $powershellExe" in handoff
     assert "-Verb RunAs" not in resume
     assert "Enable-Feature" not in resume
     assert "wsl --install" not in resume
-    assert "Windows Update" not in resume
+    assert ".Install()" not in resume
+    assert ".Download()" not in resume
+    assert "AcceptEula" not in resume
 
 
 def test_manual_resume_batch_dispatches_system_upgrade_state_first() -> None:
@@ -83,6 +137,83 @@ def test_manual_resume_batch_dispatches_system_upgrade_state_first() -> None:
     assert batch.index("resume-after-system-upgrade.ps1") < batch.index(
         "resume-whaleguard-docker-setup.ps1"
     )
+
+
+def test_windows_25h2_observation_is_bounded_read_only_and_exact() -> None:
+    monitor = (ROOT / "scripts" / "capture-windows-25h2-observation.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert '$targetDisplayVersion = "25H2"' in monitor
+    assert "$targetMinimumBuild = 26200" in monitor
+    assert '$targetUpdateId = "6a8c4c24-0dd2-46b9-9d8f-bd7a84ec5ad4"' in monitor
+    assert "$updateSearcher.Online = $false" in monitor
+    assert "$MaximumMinutesAfterBoot = 120" in monitor
+    assert "$MaximumSamples = 24" in monitor
+    assert "$noProgressSamples -ge 6" in monitor
+    assert '"Global\\WhaleGuardWindows25H2Observation"' in monitor
+    assert "$MinimumSampleIntervalSeconds = 285" in monitor
+    assert "windows-25h2-observations.ndjson" in monitor
+    assert "access_denied" in monitor
+    assert "sharing_violation" in monitor
+    assert "if ($null -eq $previousProcess) { continue }" in monitor
+    assert "schema_version = 2" in monitor
+    assert '"restart-required-needs-ui-review"' in monitor
+    assert '"setup-result-needs-review"' in monitor
+    assert "$noProgressMinutes -ge 30" in monitor
+    assert "($now - $bootTime).TotalMinutes -ge 15" in monitor
+    assert "windows_update_oobe_in_progress" in monitor
+    assert "accelerated_install_required" in monitor
+    assert "Restart-Computer" not in monitor
+    assert "UsoClient RestartDevice" not in monitor
+    assert "Stop-Process" not in monitor
+    assert "Remove-Item" not in monitor
+    assert "wsl.exe" not in monitor
+    assert "docker" not in monitor.lower()
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
+def test_windows_25h2_observation_terminal_and_interval_guards_precede_sampling(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "windows-25h2-observation-state.json"
+    log_path = tmp_path / "windows-25h2-observations.ndjson"
+    script_path = ROOT / "scripts" / "capture-windows-25h2-observation.ps1"
+    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    terminal_state = {
+        "schema_version": 2,
+        "sample_index": 8,
+        "sample_utc": now,
+        "outcome": "stalled-needs-review",
+    }
+    state_path.write_text(json.dumps(terminal_state), encoding="utf-8")
+
+    command = [
+        POWERSHELL,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script_path),
+        "-OutputDirectory",
+        str(tmp_path),
+    ]
+    terminal = subprocess.run(command, check=True, capture_output=True, text=True)  # noqa: S603
+    terminal_output = json.loads(terminal.stdout.strip())
+    assert terminal_output["outcome"] == "stalled-needs-review"
+    assert terminal_output["sample_index"] == 8
+    assert not log_path.exists()
+
+    observing_state = terminal_state | {"outcome": "observing"}
+    state_path.write_text(json.dumps(observing_state), encoding="utf-8")
+    before_state = state_path.read_bytes()
+    skipped = subprocess.run(command, check=True, capture_output=True, text=True)  # noqa: S603
+    skipped_output = json.loads(skipped.stdout.strip())
+    assert skipped_output["outcome"] == "observing"
+    assert skipped_output["sample_skipped"] is True
+    assert skipped_output["seconds_until_next_sample"] > 0
+    assert state_path.read_bytes() == before_state
+    assert not log_path.exists()
 
 
 def test_resume_stops_owned_compose_stack_before_local_dev_processes() -> None:
