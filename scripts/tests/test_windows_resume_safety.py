@@ -216,6 +216,44 @@ def test_windows_25h2_observation_terminal_and_interval_guards_precede_sampling(
     assert not log_path.exists()
 
 
+def test_windows_upgrade_snapshot_is_local_bounded_and_non_mutating() -> None:
+    snapshot = (ROOT / "scripts" / "capture-windows-upgrade-snapshot.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"windows-update-page.png"' in snapshot
+    assert '"windows-25h2-wua-result.json"' in snapshot
+    assert '"windows-25h2-observation-state.json"' in snapshot
+    assert '"windows-25h2-observations.ndjson"' in snapshot
+    assert '"windows-25h2-observation-corrections.json"' in snapshot
+    assert '"system-upgrade-resume-state.json"' in snapshot
+    assert '"system-upgrade-resume.log"' in snapshot
+    assert '"pre-reboot-status.json"' in snapshot
+    assert '"snapshot-manifest.json"' in snapshot
+    assert '"SHA256SUMS.txt"' in snapshot
+    assert '"Global\\WhaleGuardWindowsUpgradeSnapshot"' in snapshot
+    assert 'Get-ItemPropertyValue -LiteralPath $path -Name "WhaleGuardSetupResume"' in snapshot
+    assert "source_hash_verified = $true" in snapshot
+    assert "A snapshot checksum verification failed" in snapshot
+    for forbidden in (
+        "Microsoft.Update.Session",
+        "wevtutil",
+        "Get-WindowsUpdate",
+        "Restart-Computer",
+        "shutdown.exe",
+        "UsoClient RestartDevice",
+        "Stop-Service",
+        "Restart-Service",
+        "Set-Service",
+        "Set-ItemProperty",
+        "New-ItemProperty",
+        "Remove-Item",
+        "wsl.exe",
+        "docker",
+    ):
+        assert forbidden.lower() not in snapshot.lower()
+
+
 def test_resume_stops_owned_compose_stack_before_local_dev_processes() -> None:
     resume = (ROOT / "scripts" / "resume-whaleguard-docker-setup.ps1").read_text(encoding="utf-8")
 
