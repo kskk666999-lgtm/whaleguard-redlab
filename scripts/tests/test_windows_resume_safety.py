@@ -72,6 +72,11 @@ def test_system_upgrade_resume_requires_committed_25h2_and_only_hands_off() -> N
     assert "$updateSearcher.Online = $false" in resume
     assert "Search(\"UpdateID='$targetWindowsUpdateId'\")" in resume
     assert 'ClientApplicationID = "WhaleGuardSystemUpgradeResume"' in resume
+    assert "Microsoft.Update.SystemInfo" in resume
+    assert "$updateSession.CreateUpdateInstaller()" in resume
+    assert "WindowsUpdateSystemRebootRequired" in resume
+    assert "WindowsUpdateInstallerBusy" in resume
+    assert '"IMAGE_STATE_COMPLETE"' in resume
     assert "TargetUpdateSearchResultCode -eq 2" in resume
     assert "UptimeMinutes -ge 15" in resume
     assert "TargetUpdateCount -eq 0" in resume
@@ -88,6 +93,9 @@ def test_system_upgrade_resume_requires_committed_25h2_and_only_hands_off() -> N
     assert "ComponentServicingRebootPending" in resume
     assert "ComponentServicingRebootInProgress" in resume
     assert "PendingFileRenameOperations" in resume
+    assert "PendingFileRenameBoundedTempDeleteOnly" in resume
+    assert "Test-SystemUpgradeBoundedPendingRename" in resume
+    assert '"^INS_[0-9A-F]{8}\\.TMP$"' in resume
     assert "UpdateExeVolatile" in resume
     assert "WindowsUpdateOOBEInProgress" in resume
     assert "AcceleratedInstallRequired" in resume
@@ -144,13 +152,18 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile(
     '{script_path}', [ref]$tokens, [ref]$errors
 )
 if ($errors.Count -ne 0) {{ throw 'Resume script did not parse.' }}
-$functionAst = $ast.Find({{
-    param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-        $node.Name -eq 'Test-Windows25H2Committed'
-}}, $true)
-if ($null -eq $functionAst) {{ throw 'Commit gate function is missing.' }}
-Invoke-Expression $functionAst.Extent.Text
+foreach ($functionName in @(
+    'Test-SystemUpgradeBoundedPendingRename',
+    'Test-Windows25H2Committed'
+)) {{
+    $functionAst = $ast.Find({{
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq $functionName
+    }}, $true)
+    if ($null -eq $functionAst) {{ throw "Missing function: $functionName" }}
+    Invoke-Expression $functionAst.Extent.Text
+}}
 $targetWindowsDisplayVersion = '25H2'
 $minimumTargetWindowsBuild = 26200
 
@@ -162,16 +175,20 @@ $catalogAbsent = [PSCustomObject]@{{
     TargetUpdateSearchResultCode = 2
     TargetUpdateCount = 0
     TargetUpdateFound = $false
-    TargetUpdateInstalled = $false
-    TargetUpdateRebootRequired = $true
+    TargetUpdateInstalled = $null
+    TargetUpdateRebootRequired = $null
     TargetHistoryOperation = 1
     TargetHistoryResultCode = 2
     TargetHistoryHResult = 0
+    WindowsUpdateSystemRebootRequired = $false
+    WindowsUpdateInstallerBusy = $false
     WindowsUpdateRebootPending = $false
     ComponentServicingRebootPending = $false
     ComponentServicingRebootInProgress = $false
     PendingFileRenameOperations = $false
+    PendingFileRenameBoundedTempDeleteOnly = $false
     UpdateExeVolatile = 0
+    ImageState = 'IMAGE_STATE_COMPLETE'
     SystemSetupInProgress = $false
     UpgradeInProgress = $false
     RestartSetup = $false
@@ -195,6 +212,19 @@ $visible.TargetUpdateInstalled = $true
 $visible.TargetUpdateRebootRequired = $false
 if (-not (Test-Windows25H2Committed -Evidence $visible)) {{
     throw 'A visible installed catalog record was rejected.'
+}}
+
+$auditOnly = $catalogAbsent.PSObject.Copy()
+$auditOnly.WindowsUpdateOOBEInProgress = $true
+$auditOnly.AcceleratedInstallRequired = $true
+if (-not (Test-Windows25H2Committed -Evidence $auditOnly)) {{
+    throw 'Undocumented Windows Update audit values remained a hard gate.'
+}}
+$cleanupOnly = $auditOnly.PSObject.Copy()
+$cleanupOnly.PendingFileRenameOperations = $true
+$cleanupOnly.PendingFileRenameBoundedTempDeleteOnly = $true
+if (-not (Test-Windows25H2Committed -Evidence $cleanupOnly)) {{
+    throw 'The bounded Windows Temp cleanup exception was rejected.'
 }}
 
 foreach ($unsafe in @(
@@ -247,7 +277,23 @@ foreach ($unsafe in @(
         value = $null; base = $catalogAbsent
     }},
     @{{
-        name = 'OOBE active'; property = 'WindowsUpdateOOBEInProgress'
+        name = 'WUA reboot required'; property = 'WindowsUpdateSystemRebootRequired'
+        value = $true; base = $catalogAbsent
+    }},
+    @{{
+        name = 'WUA installer busy'; property = 'WindowsUpdateInstallerBusy'
+        value = $true; base = $catalogAbsent
+    }},
+    @{{
+        name = 'image incomplete'; property = 'ImageState'
+        value = 'IMAGE_STATE_UNDEPLOYABLE'; base = $catalogAbsent
+    }},
+    @{{
+        name = 'image missing'; property = 'ImageState'
+        value = $null; base = $catalogAbsent
+    }},
+    @{{
+        name = 'setup OOBE active'; property = 'OOBEInProgress'
         value = $true; base = $catalogAbsent
     }},
     @{{
@@ -267,10 +313,6 @@ foreach ($unsafe in @(
         value = 1; base = $catalogAbsent
     }},
     @{{
-        name = 'accelerated install active'; property = 'AcceleratedInstallRequired'
-        value = $true; base = $catalogAbsent
-    }},
-    @{{
         name = 'duplicate catalog'; property = 'TargetUpdateCount'
         value = 2; base = $catalogAbsent
     }}
@@ -280,6 +322,29 @@ foreach ($unsafe in @(
     if (Test-Windows25H2Committed -Evidence $candidate) {{
         throw "Unsafe gate evidence was accepted: $($unsafe.name)"
     }}
+}}
+
+$goodCleanup = @('*1\??\C:\Windows\Temp\INS_897b25a4.TMP', '')
+if (-not (Test-SystemUpgradeBoundedPendingRename `
+    -Operations $goodCleanup -Operations2 @() -WindowsDirectory 'C:\Windows')) {{
+    throw 'The exact bounded cleanup pair was rejected.'
+}}
+foreach ($badRename in @(
+    @('*1\??\C:\Windows\System32\INS_897b25a4.TMP', ''),
+    @('*1\??\C:\Windows\Temp\..\System32\INS_897b25a4.TMP', ''),
+    @('*1\??\C:\Windows\Temp\INS_897b25a4.TMP', 'C:\replacement.dll'),
+    @('\??\C:\Windows\Temp\INS_897b25a4.TMP', ''),
+    @('*1\??\C:\Windows\Temp\other.tmp', ''),
+    @('*1\??\C:\Windows\Temp\INS_897b25a4.TMP')
+)) {{
+    if (Test-SystemUpgradeBoundedPendingRename `
+        -Operations $badRename -Operations2 @() -WindowsDirectory 'C:\Windows') {{
+        throw 'An unsafe pending rename shape was accepted.'
+    }}
+}}
+if (Test-SystemUpgradeBoundedPendingRename `
+    -Operations $goodCleanup -Operations2 @('extra') -WindowsDirectory 'C:\Windows') {{
+    throw 'A non-empty PendingFileRenameOperations2 value was accepted.'
 }}
 'PASS'
 """

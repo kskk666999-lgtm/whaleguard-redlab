@@ -194,6 +194,46 @@ function Read-SystemUpgradeResumeState {
     }
 }
 
+function Test-SystemUpgradeBoundedPendingRename {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Operations,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Operations2,
+        [Parameter(Mandatory = $true)][string]$WindowsDirectory
+    )
+
+    if ($Operations2.Count -ne 0 -or $Operations.Count -ne 2) { return $false }
+    $source = [string]$Operations[0]
+    $destination = [string]$Operations[1]
+    $namespacePrefix = "*1\??\"
+    if (
+        -not [string]::IsNullOrEmpty($source) -and
+        [string]::IsNullOrEmpty($destination) -and
+        $source.StartsWith($namespacePrefix, [StringComparison]::Ordinal)
+    ) {
+        try {
+            $normalizedSource = [IO.Path]::GetFullPath($source.Substring($namespacePrefix.Length))
+            $normalizedWindowsDirectory = [IO.Path]::GetFullPath($WindowsDirectory).TrimEnd("\")
+            $expectedDirectory = [IO.Path]::GetFullPath((Join-Path $normalizedWindowsDirectory "Temp"))
+        }
+        catch {
+            return $false
+        }
+        return (
+            [string]::Equals(
+                [IO.Path]::GetDirectoryName($normalizedSource),
+                $expectedDirectory,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -and
+            [regex]::IsMatch(
+                [IO.Path]::GetFileName($normalizedSource),
+                "^INS_[0-9A-F]{8}\.TMP$",
+                [Text.RegularExpressions.RegexOptions]::IgnoreCase
+            )
+        )
+    }
+    return $false
+}
+
 function Get-Windows25H2CommitEvidence {
     try {
         $operatingSystem = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
@@ -216,6 +256,10 @@ function Get-Windows25H2CommitEvidence {
     try {
         $updateSession = New-Object -ComObject Microsoft.Update.Session
         $updateSession.ClientApplicationID = "WhaleGuardSystemUpgradeResume"
+        $updateSystemInformation = New-Object -ComObject Microsoft.Update.SystemInfo
+        $windowsUpdateSystemRebootRequired = [bool]$updateSystemInformation.RebootRequired
+        $updateInstaller = $updateSession.CreateUpdateInstaller()
+        $windowsUpdateInstallerBusy = [bool]$updateInstaller.IsBusy
         $updateSearcher = $updateSession.CreateUpdateSearcher()
         $updateSearcher.Online = $false
         $searchResult = $updateSearcher.Search("UpdateID='$targetWindowsUpdateId'")
@@ -271,6 +315,13 @@ function Get-Windows25H2CommitEvidence {
     }
 
     $systemSetup = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\Setup" -ErrorAction Stop
+    $setupState = Get-ItemProperty -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State" -ErrorAction Stop
+    $imageState = if (@($setupState.PSObject.Properties.Name) -contains "ImageState") {
+        [string]$setupState.ImageState
+    }
+    else {
+        ""
+    }
     $systemSetupPropertyNames = @($systemSetup.PSObject.Properties.Name)
     $systemSetupInProgress = (
         $systemSetupPropertyNames -contains "SystemSetupInProgress" -and
@@ -321,9 +372,30 @@ function Get-Windows25H2CommitEvidence {
 
     $sessionManager = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -ErrorAction Stop
     $sessionManagerPropertyNames = @($sessionManager.PSObject.Properties.Name)
+    $pendingFileRenameOperationValues = @()
+    if (
+        $sessionManagerPropertyNames -contains "PendingFileRenameOperations" -and
+        $null -ne $sessionManager.PendingFileRenameOperations
+    ) {
+        $pendingFileRenameOperationValues = @($sessionManager.PendingFileRenameOperations)
+    }
+    $pendingFileRenameOperation2Values = @()
+    if (
+        $sessionManagerPropertyNames -contains "PendingFileRenameOperations2" -and
+        $null -ne $sessionManager.PendingFileRenameOperations2
+    ) {
+        $pendingFileRenameOperation2Values = @($sessionManager.PendingFileRenameOperations2)
+    }
     $pendingFileRenameOperations = (
-        ($sessionManagerPropertyNames -contains "PendingFileRenameOperations" -and @($sessionManager.PendingFileRenameOperations).Count -gt 0) -or
-        ($sessionManagerPropertyNames -contains "PendingFileRenameOperations2" -and @($sessionManager.PendingFileRenameOperations2).Count -gt 0)
+        $pendingFileRenameOperationValues.Count -gt 0 -or
+        $pendingFileRenameOperation2Values.Count -gt 0
+    )
+    $pendingFileRenameBoundedTempDeleteOnly = (
+        $pendingFileRenameOperations -and
+        (Test-SystemUpgradeBoundedPendingRename `
+            -Operations $pendingFileRenameOperationValues `
+            -Operations2 $pendingFileRenameOperation2Values `
+            -WindowsDirectory ([string]$operatingSystem.WindowsDirectory))
     )
 
     $updateExeVolatile = 0
@@ -360,17 +432,23 @@ function Get-Windows25H2CommitEvidence {
         TargetUpdateSearchResultCode = [int]$searchResult.ResultCode
         TargetUpdateCount = [int]$searchResult.Updates.Count
         TargetUpdateFound = $null -ne $targetUpdate -and $targetIdentityMatches
-        TargetUpdateInstalled = if ($null -ne $targetUpdate) { [bool]$targetUpdate.IsInstalled } else { $false }
-        TargetUpdateRebootRequired = if ($null -ne $targetUpdate) { [bool]$targetUpdate.RebootRequired } else { $true }
+        TargetUpdateInstalled = if ($null -ne $targetUpdate) { [bool]$targetUpdate.IsInstalled } else { $null }
+        TargetUpdateRebootRequired = if ($null -ne $targetUpdate) { [bool]$targetUpdate.RebootRequired } else { $null }
         TargetHistoryResultCode = $historyResultCode
         TargetHistoryOperation = $historyOperation
         TargetHistoryHResult = $historyHResult
         TargetHistoryDate = $historyDate
+        WindowsUpdateSystemRebootRequired = $windowsUpdateSystemRebootRequired
+        WindowsUpdateInstallerBusy = $windowsUpdateInstallerBusy
         WindowsUpdateRebootPending = Test-Path -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired" -ErrorAction Stop
         ComponentServicingRebootPending = Test-Path -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" -ErrorAction Stop
         ComponentServicingRebootInProgress = Test-Path -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootInProgress" -ErrorAction Stop
         PendingFileRenameOperations = $pendingFileRenameOperations
+        PendingFileRenameOperationCount = $pendingFileRenameOperationValues.Count
+        PendingFileRenameOperation2Count = $pendingFileRenameOperation2Values.Count
+        PendingFileRenameBoundedTempDeleteOnly = $pendingFileRenameBoundedTempDeleteOnly
         UpdateExeVolatile = $updateExeVolatile
+        ImageState = $imageState
         SystemSetupInProgress = $systemSetupInProgress
         UpgradeInProgress = $upgradeInProgress
         RestartSetup = $restartSetup
@@ -413,17 +491,25 @@ function Test-Windows25H2Committed {
         [int]$Evidence.TargetHistoryResultCode -eq 2 -and
         $null -ne $Evidence.TargetHistoryHResult -and
         [int]$Evidence.TargetHistoryHResult -eq 0 -and
+        -not [bool]$Evidence.WindowsUpdateSystemRebootRequired -and
+        -not [bool]$Evidence.WindowsUpdateInstallerBusy -and
         -not [bool]$Evidence.WindowsUpdateRebootPending -and
         -not [bool]$Evidence.ComponentServicingRebootPending -and
         -not [bool]$Evidence.ComponentServicingRebootInProgress -and
-        -not [bool]$Evidence.PendingFileRenameOperations -and
+        (
+            -not [bool]$Evidence.PendingFileRenameOperations -or
+            [bool]$Evidence.PendingFileRenameBoundedTempDeleteOnly
+        ) -and
         [int]$Evidence.UpdateExeVolatile -eq 0 -and
+        [string]::Equals(
+            [string]$Evidence.ImageState,
+            "IMAGE_STATE_COMPLETE",
+            [StringComparison]::Ordinal
+        ) -and
         -not [bool]$Evidence.SystemSetupInProgress -and
         -not [bool]$Evidence.UpgradeInProgress -and
         -not [bool]$Evidence.RestartSetup -and
         -not [bool]$Evidence.OOBEInProgress -and
-        -not [bool]$Evidence.WindowsUpdateOOBEInProgress -and
-        -not [bool]$Evidence.AcceleratedInstallRequired -and
         [int]$Evidence.MoSetupHostResult -eq 0 -and
         [int]$Evidence.MoSetupBoxResult -eq 0 -and
         [int]$Evidence.MoSetupOperationResult -eq 0 -and
@@ -435,7 +521,7 @@ function Test-Windows25H2Committed {
 function Get-Windows25H2EvidenceSummary {
     param([Parameter(Mandatory = $true)][object]$Evidence)
 
-    return "display=$($Evidence.DisplayVersion) build=$($Evidence.BuildNumber) registry_build=$($Evidence.RegistryBuildNumber) uptime_minutes=$($Evidence.UptimeMinutes) search_result=$($Evidence.TargetUpdateSearchResultCode) update_count=$($Evidence.TargetUpdateCount) update_catalog_absent=$([int]$Evidence.TargetUpdateCount -eq 0) update_found=$($Evidence.TargetUpdateFound) installed=$($Evidence.TargetUpdateInstalled) update_reboot=$($Evidence.TargetUpdateRebootRequired) history_operation=$($Evidence.TargetHistoryOperation) history_result=$($Evidence.TargetHistoryResultCode) history_hresult=$($Evidence.TargetHistoryHResult) wu_reboot=$($Evidence.WindowsUpdateRebootPending) cbs_reboot=$($Evidence.ComponentServicingRebootPending) cbs_reboot_in_progress=$($Evidence.ComponentServicingRebootInProgress) pending_file_rename=$($Evidence.PendingFileRenameOperations) update_exe_volatile=$($Evidence.UpdateExeVolatile) setup_in_progress=$($Evidence.SystemSetupInProgress) upgrade_in_progress=$($Evidence.UpgradeInProgress) restart_setup=$($Evidence.RestartSetup) oobe_in_progress=$($Evidence.OOBEInProgress) wu_oobe_in_progress=$($Evidence.WindowsUpdateOOBEInProgress) accelerated_install=$($Evidence.AcceleratedInstallRequired) mosetup_host_result=$($Evidence.MoSetupHostResult) mosetup_box_result=$($Evidence.MoSetupBoxResult) mosetup_operation_result=$($Evidence.MoSetupOperationResult) mosetup_rollback=$($Evidence.MoSetupRollbackMode) setup_processes=$($Evidence.SetupProcessCount)"
+    return "display=$($Evidence.DisplayVersion) build=$($Evidence.BuildNumber) registry_build=$($Evidence.RegistryBuildNumber) uptime_minutes=$($Evidence.UptimeMinutes) search_result=$($Evidence.TargetUpdateSearchResultCode) update_count=$($Evidence.TargetUpdateCount) update_catalog_absent=$([int]$Evidence.TargetUpdateCount -eq 0) update_found=$($Evidence.TargetUpdateFound) installed=$($Evidence.TargetUpdateInstalled) update_reboot=$($Evidence.TargetUpdateRebootRequired) history_operation=$($Evidence.TargetHistoryOperation) history_result=$($Evidence.TargetHistoryResultCode) history_hresult=$($Evidence.TargetHistoryHResult) system_reboot=$($Evidence.WindowsUpdateSystemRebootRequired) installer_busy=$($Evidence.WindowsUpdateInstallerBusy) wu_reboot=$($Evidence.WindowsUpdateRebootPending) cbs_reboot=$($Evidence.ComponentServicingRebootPending) cbs_reboot_in_progress=$($Evidence.ComponentServicingRebootInProgress) pending_file_rename=$($Evidence.PendingFileRenameOperations) pending_file_rename_count=$($Evidence.PendingFileRenameOperationCount) pending_file_rename2_count=$($Evidence.PendingFileRenameOperation2Count) pending_file_rename_cleanup_only=$($Evidence.PendingFileRenameBoundedTempDeleteOnly) update_exe_volatile=$($Evidence.UpdateExeVolatile) image_state=$($Evidence.ImageState) setup_in_progress=$($Evidence.SystemSetupInProgress) upgrade_in_progress=$($Evidence.UpgradeInProgress) restart_setup=$($Evidence.RestartSetup) oobe_in_progress=$($Evidence.OOBEInProgress) wu_oobe_audit=$($Evidence.WindowsUpdateOOBEInProgress) accelerated_install_audit=$($Evidence.AcceleratedInstallRequired) mosetup_host_result=$($Evidence.MoSetupHostResult) mosetup_box_result=$($Evidence.MoSetupBoxResult) mosetup_operation_result=$($Evidence.MoSetupOperationResult) mosetup_rollback=$($Evidence.MoSetupRollbackMode) setup_processes=$($Evidence.SetupProcessCount)"
 }
 
 function Remove-SystemUpgradeRunOnce {
