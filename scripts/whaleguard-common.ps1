@@ -798,15 +798,64 @@ function Assert-WgRunningDockerDesktopOwnership {
     catch {
         throw "Running Docker Desktop ownership could not be verified; refusing to continue."
     }
+    if ($processes.Count -eq 0) { return @() }
+    if (-not $ExpectedPath) {
+        throw "A different or untrusted Docker Desktop installation is already running. Stopping or switching it requires an explicit user decision."
+    }
+
+    try {
+        $resolvedExpectedPath = [IO.Path]::GetFullPath($ExpectedPath)
+        $expectedInstallRoot = [IO.Path]::GetDirectoryName($resolvedExpectedPath)
+    }
+    catch {
+        throw "The expected Docker Desktop installation path is invalid; refusing to attach to running processes."
+    }
+    $canonicalLauncherPaths = @(Get-WgCanonicalDockerInstallRoots | ForEach-Object {
+        [IO.Path]::GetFullPath((Join-Path $_ "Docker Desktop.exe"))
+    })
+    if (-not ($canonicalLauncherPaths | Where-Object {
+        [string]::Equals(
+            $_,
+            $resolvedExpectedPath,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    })) {
+        throw "The running Docker Desktop installation is outside the canonical current-user location."
+    }
+
+    try {
+        $expectedEvidence = Get-WgDockerBinaryEvidence -Path $resolvedExpectedPath -Kind "Desktop"
+    }
+    catch {
+        throw "The expected Docker Desktop launcher could not be validated; refusing to attach to running processes."
+    }
+    $trustedProcessPaths = @{}
+    foreach ($candidatePath in @(
+        $resolvedExpectedPath,
+        (Join-Path $expectedInstallRoot "frontend\Docker Desktop.exe")
+    )) {
+        if (-not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) { continue }
+        try {
+            $candidateEvidence = Get-WgDockerBinaryEvidence -Path $candidatePath -Kind "Desktop"
+        }
+        catch {
+            throw "A Docker Desktop process binary in the expected installation failed publisher validation."
+        }
+        if ($candidateEvidence.Version -ne $expectedEvidence.Version) {
+            throw "Docker Desktop process binaries in the expected installation have mismatched versions."
+        }
+        $trustedProcessPaths[[IO.Path]::GetFullPath($candidatePath)] = $true
+    }
     foreach ($desktopProcess in $processes) {
         $executablePath = [string]$desktopProcess.ExecutablePath
         if (-not $executablePath) {
             throw "A running Docker Desktop process has an unverifiable executable path; refusing to modify or attach to it."
         }
-        if (
-            -not $ExpectedPath -or
-            -not [string]::Equals([IO.Path]::GetFullPath($executablePath), [IO.Path]::GetFullPath($ExpectedPath), [StringComparison]::OrdinalIgnoreCase)
-        ) {
+        try { $resolvedExecutablePath = [IO.Path]::GetFullPath($executablePath) }
+        catch {
+            throw "A running Docker Desktop process has an invalid executable path; refusing to modify or attach to it."
+        }
+        if (-not $trustedProcessPaths.ContainsKey($resolvedExecutablePath)) {
             throw "A different or untrusted Docker Desktop installation is already running. Stopping or switching it requires an explicit user decision."
         }
     }

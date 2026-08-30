@@ -728,6 +728,93 @@ exit 0
     assert result.returncode == 0, result.stderr + result.stdout
 
 
+def test_docker_desktop_ownership_accepts_signed_launcher_and_frontend(tmp_path: Path) -> None:
+    install_root = tmp_path / "DockerDesktop"
+    launcher = install_root / "Docker Desktop.exe"
+    frontend = install_root / "frontend" / "Docker Desktop.exe"
+    frontend.parent.mkdir(parents=True)
+    launcher.write_bytes(b"launcher fixture")
+    frontend.write_bytes(b"frontend fixture")
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgCanonicalDockerInstallRoots {{ return @({ps_quote(install_root)}) }}
+function Get-WgDockerBinaryEvidence {{
+    param([string]$Path, [string]$Kind)
+    return [PSCustomObject]@{{
+        Path = [IO.Path]::GetFullPath($Path)
+        Version = [version]'4.88.1.237512'
+    }}
+}}
+function Get-CimInstance {{
+    return @(
+        [PSCustomObject]@{{ ExecutablePath = {ps_quote(launcher)} }},
+        [PSCustomObject]@{{ ExecutablePath = {ps_quote(frontend)} }}
+    )
+}}
+$processes = @(Assert-WgRunningDockerDesktopOwnership -ExpectedPath {ps_quote(launcher)})
+if ($processes.Count -ne 2) {{ exit 2 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_docker_desktop_ownership_rejects_other_path_and_version(tmp_path: Path) -> None:
+    install_root = tmp_path / "DockerDesktop"
+    launcher = install_root / "Docker Desktop.exe"
+    frontend = install_root / "frontend" / "Docker Desktop.exe"
+    other = tmp_path / "OtherDocker" / "Docker Desktop.exe"
+    frontend.parent.mkdir(parents=True)
+    other.parent.mkdir(parents=True)
+    launcher.write_bytes(b"launcher fixture")
+    frontend.write_bytes(b"frontend fixture")
+    other.write_bytes(b"other fixture")
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgCanonicalDockerInstallRoots {{ return @({ps_quote(install_root)}) }}
+function Get-WgDockerBinaryEvidence {{
+    param([string]$Path, [string]$Kind)
+    $frontendPath = [IO.Path]::GetFullPath({ps_quote(frontend)})
+    $version = if ([IO.Path]::GetFullPath($Path) -eq $frontendPath) {{
+        [version]'4.89.0'
+    }} else {{
+        [version]'4.88.1.237512'
+    }}
+    return [PSCustomObject]@{{ Path = [IO.Path]::GetFullPath($Path); Version = $version }}
+}}
+function Get-CimInstance {{ return [PSCustomObject]@{{ ExecutablePath = {ps_quote(launcher)} }} }}
+try {{ $null = Assert-WgRunningDockerDesktopOwnership -ExpectedPath {ps_quote(launcher)}; exit 2 }}
+catch {{ if ($_.Exception.Message -notmatch 'mismatched versions') {{ exit 3 }} }}
+
+function Get-WgDockerBinaryEvidence {{
+    param([string]$Path, [string]$Kind)
+    if ([IO.Path]::GetFullPath($Path) -eq [IO.Path]::GetFullPath({ps_quote(frontend)})) {{
+        throw 'simulated invalid Docker publisher signature'
+    }}
+    return [PSCustomObject]@{{
+        Path = [IO.Path]::GetFullPath($Path)
+        Version = [version]'4.88.1.237512'
+    }}
+}}
+try {{ $null = Assert-WgRunningDockerDesktopOwnership -ExpectedPath {ps_quote(launcher)}; exit 4 }}
+catch {{ if ($_.Exception.Message -notmatch 'failed publisher validation') {{ exit 5 }} }}
+
+function Get-WgDockerBinaryEvidence {{
+    param([string]$Path, [string]$Kind)
+    return [PSCustomObject]@{{
+        Path = [IO.Path]::GetFullPath($Path)
+        Version = [version]'4.88.1.237512'
+    }}
+}}
+function Get-CimInstance {{ return [PSCustomObject]@{{ ExecutablePath = {ps_quote(other)} }} }}
+try {{ $null = Assert-WgRunningDockerDesktopOwnership -ExpectedPath {ps_quote(launcher)}; exit 6 }}
+catch {{ if ($_.Exception.Message -notmatch 'different or untrusted') {{ exit 7 }} }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
 def test_docker_runtime_cim_failure_is_fail_closed() -> None:
     source = f"""
 . {ps_quote(COMMON)}
