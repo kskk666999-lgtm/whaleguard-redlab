@@ -54,10 +54,7 @@ if ($wslExitCode -ne 0 -and $wslExitCode -ne 3010) {
     $wslExitCode = $LASTEXITCODE
 }
 if ($wslExitCode -eq 3010) { exit 3010 }
-if ($wslExitCode -ne 0) {
-    & $wslExe --version *> $null
-    if ($LASTEXITCODE -ne 0) { exit 60 }
-}
+if ($wslExitCode -ne 0) { exit 60 }
 exit 0
 '@
     $payload = $payload.Replace("__EXPECTED_USER_SID__", $ExpectedUserSid.Replace("'", "''"))
@@ -107,7 +104,7 @@ try {
     $process = Start-Process -FilePath $powershellExe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encodedPayload
     )
-    $requiresReboot = $process.ExitCode -in @(3010, 194)
+    $requiresReboot = $process.ExitCode -eq 3010
     $prerequisiteLog = Join-Path $resultDirectory "container-prerequisites-elevated.log"
     @(
         "Completed at $((Get-Date).ToString('o'))",

@@ -28,6 +28,24 @@ function Get-WgWindowsSystemExecutable {
     return $candidate
 }
 
+function Invoke-WgExternalCommandToHost {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @()
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $FilePath @Arguments 2>&1 | Out-Host
+        $exitCode = [int]$LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return $exitCode
+}
+
 function Assert-WgNoReparsePointInPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 

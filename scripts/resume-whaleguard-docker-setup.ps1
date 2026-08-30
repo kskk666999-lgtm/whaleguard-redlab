@@ -105,6 +105,17 @@ function Write-DockerInstallerEvidence {
 function Get-OfficialDockerInstaller {
     New-Item -ItemType Directory -Path $installerDir -Force | Out-Null
     if (Test-Path -LiteralPath $installerPath) {
+        $cachedInstaller = Get-Item -LiteralPath $installerPath -ErrorAction Stop
+        $cacheAge = [DateTime]::UtcNow - $cachedInstaller.LastWriteTimeUtc
+        if (
+            $cacheAge -ge [TimeSpan]::Zero -and
+            $cacheAge -le [TimeSpan]::FromHours(1) -and
+            (Test-DockerInstallerSignature -Path $installerPath)
+        ) {
+            Write-Host "Reusing a recently downloaded Docker-signed installer after local setup recovery."
+            Write-DockerInstallerEvidence -Path $installerPath
+            return $installerPath
+        }
         Remove-Item -LiteralPath $installerPath -Force
         Write-Host "Discarded the previous installer cache; a fresh official package is required."
     }
@@ -116,10 +127,17 @@ function Get-OfficialDockerInstaller {
         New-Item -ItemType Directory -Path $wingetDir -Force | Out-Null
         try {
             Write-Host "Downloading a fresh exact Docker.DockerDesktop package from the official winget source."
-            & $winget show --id Docker.DockerDesktop --exact --source winget --accept-source-agreements --disable-interactivity
-            if ($LASTEXITCODE -eq 0) {
-                & $winget download --id Docker.DockerDesktop --exact --source winget --architecture x64 --download-directory $wingetDir --accept-package-agreements --accept-source-agreements --disable-interactivity
-                if ($LASTEXITCODE -eq 0) {
+            $showExitCode = Invoke-WgExternalCommandToHost -FilePath $winget -Arguments @(
+                "show", "--id", "Docker.DockerDesktop", "--exact", "--source", "winget",
+                "--accept-source-agreements", "--disable-interactivity"
+            )
+            if ($showExitCode -eq 0) {
+                $downloadExitCode = Invoke-WgExternalCommandToHost -FilePath $winget -Arguments @(
+                    "download", "--id", "Docker.DockerDesktop", "--exact", "--source", "winget",
+                    "--architecture", "x64", "--download-directory", $wingetDir,
+                    "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"
+                )
+                if ($downloadExitCode -eq 0) {
                     $trustedInstallers = @()
                     foreach ($candidate in Get-ChildItem -LiteralPath $wingetDir -Filter "*.exe" -File -Recurse -ErrorAction SilentlyContinue) {
                         if (Test-DockerInstallerSignature -Path $candidate.FullName) {
@@ -153,7 +171,7 @@ function Get-OfficialDockerInstaller {
         Write-Host "Downloading a fresh Docker Desktop installer from the official desktop.docker.com endpoint."
         $bits = Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue
         if ($bits) {
-            Start-BitsTransfer -Source $installerUrl -Destination $downloadPath -DisplayName "WhaleGuard Docker Desktop setup"
+            Start-BitsTransfer -Source $installerUrl -Destination $downloadPath -DisplayName "WhaleGuard Docker Desktop setup" | Out-Null
         }
         else {
             Add-Type -AssemblyName System.Net.Http -ErrorAction Stop

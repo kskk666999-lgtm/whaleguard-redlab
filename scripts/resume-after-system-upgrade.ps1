@@ -699,7 +699,7 @@ try {
     Write-SystemUpgradeResumeLog -Event "handoff-started" -Detail "Supported Windows build confirmed; invoking the existing non-elevated setup entry."
     $child = Start-Process -FilePath $powershellExe -ArgumentList $argumentLine -Wait -PassThru
     $childExitCode = [int]$child.ExitCode
-    if ($childExitCode -in @(0, 194, 3010)) {
+    if ($childExitCode -in @(0, 3010)) {
         Remove-SystemUpgradeRunOnce
         Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
         Write-SystemUpgradeResumeLog -Event "handoff-complete" -Detail "existing_setup_exit=$childExitCode"

@@ -439,8 +439,12 @@ def test_docker_supply_chain_uses_only_trusted_canonical_binaries_and_fresh_inst
     assert "Get-Command docker" not in common
     assert 'Get-ChildItem -LiteralPath $programsRoot -Filter "Docker Desktop.exe"' not in resume
     assert "Using the existing valid Docker-signed installer" not in resume
+    assert (
+        "Reusing a recently downloaded Docker-signed installer after local setup recovery" in resume
+    )
+    assert "$cacheAge -le [TimeSpan]::FromHours(1)" in resume
     assert "Discarded the previous installer cache" in resume
-    assert "winget download --id Docker.DockerDesktop --exact --source winget" in resume
+    assert '"download", "--id", "Docker.DockerDesktop", "--exact", "--source", "winget"' in resume
     assert "[Environment+SpecialFolder]::LocalApplicationData" in resume
     assert 'Get-WgDockerBinaryEvidence -Path $Path -Kind "Installer"' in resume
     assert "Remove-Item -LiteralPath $installer -Force" in resume
@@ -575,6 +579,23 @@ $env:SystemRoot = {ps_quote(tmp_path)}
 $resolved = Get-WgWindowsSystemExecutable -RelativePath 'wsl.exe'
 $expected = [IO.Path]::GetFullPath((Join-Path ([Environment]::SystemDirectory) 'wsl.exe'))
 if (-not [string]::Equals($resolved, $expected, [StringComparison]::OrdinalIgnoreCase)) {{ exit 2 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_external_command_host_output_does_not_contaminate_return_value(tmp_path: Path) -> None:
+    fake_command = tmp_path / "noisy-command.cmd"
+    fake_command.write_text(
+        "@echo off\r\necho harmless stdout\r\necho harmless stderr 1>&2\r\nexit /b 7\r\n",
+        encoding="ascii",
+    )
+    source = f"""
+. {ps_quote(COMMON)}
+$result = @(Invoke-WgExternalCommandToHost -FilePath {ps_quote(fake_command)})
+if ($result.Count -ne 1) {{ exit 2 }}
+if ([int]$result[0] -ne 7) {{ exit 3 }}
 exit 0
 """
     result = run_ps(source)

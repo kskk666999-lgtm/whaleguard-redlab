@@ -41,6 +41,25 @@ def test_automatic_resume_is_current_user_crash_safe_and_bounded() -> None:
     assert "Register-WgAutomaticResume" not in resume
 
 
+def test_prerequisite_payload_never_probes_missing_wsl_after_install_failure() -> None:
+    setup = (ROOT / "scripts" / "setup-whaleguard-docker.ps1").read_text(encoding="utf-8")
+    payload = setup.split("$payload = @'", 1)[1].split("'@", 1)[0]
+
+    assert "& $wslExe --install --no-distribution" in payload
+    assert "& $wslExe --install --no-distribution --web-download" in payload
+    assert "if ($wslExitCode -ne 0) { exit 60 }" in payload
+    assert "& $wslExe --version" not in payload
+
+
+def test_native_windows_reboot_exit_code_is_not_truncated() -> None:
+    setup = (ROOT / "scripts" / "setup-whaleguard-docker.ps1").read_text(encoding="utf-8")
+    resume = (ROOT / "scripts" / "resume-after-system-upgrade.ps1").read_text(encoding="utf-8")
+
+    assert "$process.ExitCode -eq 3010" in setup
+    assert "$childExitCode -in @(0, 3010)" in resume
+    assert "194" not in setup + resume
+
+
 def test_system_upgrade_resume_uses_exact_bounded_current_user_runonce() -> None:
     resume = (ROOT / "scripts" / "resume-after-system-upgrade.ps1").read_text(encoding="utf-8")
 
