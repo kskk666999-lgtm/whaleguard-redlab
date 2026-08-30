@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [switch]$Register,
-    [switch]$AutoResume
+    [switch]$AutoResume,
+    [switch]$DisableRetry
 )
 
 Set-StrictMode -Version Latest
@@ -525,9 +526,14 @@ function Get-Windows25H2EvidenceSummary {
 }
 
 function Remove-SystemUpgradeRunOnce {
-    $runOnce = Get-ItemProperty -Path $runOncePath -ErrorAction SilentlyContinue
-    if ($runOnce -and @($runOnce.PSObject.Properties.Name) -contains $runOnceName) {
-        Remove-ItemProperty -Path $runOncePath -Name $runOnceName -ErrorAction SilentlyContinue
+    $key = Get-Item -LiteralPath $runOncePath -ErrorAction SilentlyContinue
+    if ($null -eq $key) { return }
+    if (@($key.GetValueNames()) -contains $runOnceName) {
+        Remove-ItemProperty -LiteralPath $runOncePath -Name $runOnceName -ErrorAction Stop
+    }
+    $key = Get-Item -LiteralPath $runOncePath -ErrorAction SilentlyContinue
+    if ($null -ne $key -and @($key.GetValueNames()) -contains $runOnceName) {
+        throw "The exact current-user RunOnce retry could not be disabled."
     }
 }
 
@@ -568,8 +574,9 @@ function Record-SystemUpgradeFailure {
 }
 
 try {
-    if ([bool]$Register -eq [bool]$AutoResume) {
-        throw "Specify exactly one of -Register or -AutoResume."
+    $selectedModeCount = [int][bool]$Register + [int][bool]$AutoResume + [int][bool]$DisableRetry
+    if ($selectedModeCount -ne 1) {
+        throw "Specify exactly one of -Register, -AutoResume, or -DisableRetry."
     }
     try { $mutexAcquired = $mutex.WaitOne(0) }
     catch [Threading.AbandonedMutexException] { $mutexAcquired = $true }
@@ -577,6 +584,17 @@ try {
 
     Assert-WgNoReparsePointInPath -Path $projectRoot
     Assert-WgNoReparsePointInPath -Path $resumeScript
+
+    if ($DisableRetry) {
+        $state = Read-SystemUpgradeResumeState
+        Remove-SystemUpgradeRunOnce
+        $state.runonce_enabled = $false
+        Add-SystemUpgradeStateHistory -State $state -Phase "retry-disabled" -Detail "The exact current-user RunOnce retry was disabled after a handoff failure; failure counters and evidence were preserved."
+        Write-SystemUpgradeResumeState -State $state
+        Write-SystemUpgradeResumeLog -Event "runonce-disabled" -Detail "previous_phase=$($state.phase) last_failure=$($state.last_failure) resume_attempt=$($state.resume_attempt) same_failure_count=$($state.same_failure_count)"
+        Write-Host "SYSTEM_UPGRADE_RESUME_RETRY_DISABLED"
+        exit 0
+    }
 
     if ($Register) {
         $currentPhase = "registering"
@@ -690,19 +708,10 @@ try {
     }
 
     Record-SystemUpgradeFailure -State $state -FailureCode ("docker-wsl-handoff-exit-{0}" -f $childExitCode)
-    if (
-        [int]$state.resume_attempt -lt $maximumResumeAttempts -and
-        [int]$state.same_failure_count -lt $maximumSameFailures
-    ) {
-        $null = Set-SystemUpgradeRunOnce
-        $state.runonce_enabled = $true
-        Write-SystemUpgradeResumeState -State $state
-        Write-SystemUpgradeResumeLog -Event "retry-armed" -Detail "same_failure_count=$($state.same_failure_count); one final sign-in retry is armed."
-    }
-    else {
-        Remove-SystemUpgradeRunOnce
-        Write-SystemUpgradeResumeLog -Event "retry-exhausted" -Detail "same_failure_count=$($state.same_failure_count); no further automatic retry is registered."
-    }
+    Remove-SystemUpgradeRunOnce
+    $state.runonce_enabled = $false
+    Write-SystemUpgradeResumeState -State $state
+    Write-SystemUpgradeResumeLog -Event "retry-not-armed" -Detail "same_failure_count=$($state.same_failure_count); a failed Docker/WSL handoff requires explicit diagnosis before another attempt."
     exit 1
 }
 catch {

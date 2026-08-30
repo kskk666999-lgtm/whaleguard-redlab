@@ -75,8 +75,20 @@ function Assert-WgContainerHostCompatibility {
         catch {
             throw "Installed application inventory could not be verified; refusing to enable the WSL2 hypervisor."
         }
-        foreach ($virtualBox in @($installedApplications | Where-Object { $_.DisplayName -like "Oracle VM VirtualBox*" })) {
-            $versionMatch = [regex]::Match([string]$virtualBox.DisplayVersion, "(?<![0-9])([0-9]+(?:\.[0-9]+)+)")
+        foreach ($installedApplication in @($installedApplications)) {
+            if ($null -eq $installedApplication) { continue }
+            $propertyNames = @($installedApplication.PSObject.Properties.Name)
+            if (-not ($propertyNames -contains "DisplayName")) { continue }
+            $displayName = [string]$installedApplication.DisplayName
+            $isVirtualBox = (
+                $displayName.StartsWith("Oracle VM VirtualBox", [StringComparison]::OrdinalIgnoreCase) -or
+                $displayName.StartsWith("Oracle VirtualBox", [StringComparison]::OrdinalIgnoreCase)
+            )
+            if (-not $isVirtualBox) { continue }
+            if (-not ($propertyNames -contains "DisplayVersion")) {
+                throw "An installed VirtualBox version could not be verified. Upgrade or remove VirtualBox before continuing."
+            }
+            $versionMatch = [regex]::Match([string]$installedApplication.DisplayVersion, "(?<![0-9])([0-9]+(?:\.[0-9]+)+)")
             if (-not $versionMatch.Success) {
                 throw "An installed VirtualBox version could not be verified. Upgrade or remove VirtualBox before continuing."
             }

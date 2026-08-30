@@ -682,6 +682,89 @@ exit 0
     assert result.returncode == 0, result.stderr + result.stdout
 
 
+def test_host_compatibility_ignores_uninstall_records_without_display_name() -> None:
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-CimInstance {{ return [PSCustomObject]@{{ BuildNumber = '26200' }} }}
+function Test-Path {{ return $true }}
+function Get-ChildItem {{
+    return @(
+        [PSCustomObject]@{{ PSPath = 'registry::fixture-without-display-name' }},
+        [PSCustomObject]@{{ DisplayName = 'Unrelated App'; DisplayVersion = '1.0' }}
+    )
+}}
+function Get-ItemProperty {{ process {{ return $_ }} }}
+$result = Assert-WgContainerHostCompatibility
+if ($result.BuildNumber -ne 26200) {{ exit 2 }}
+if (@($result.VirtualBoxVersions).Count -ne 0) {{ exit 3 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_host_compatibility_rejects_virtualbox_without_version() -> None:
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-CimInstance {{ return [PSCustomObject]@{{ BuildNumber = '26200' }} }}
+function Test-Path {{ return $true }}
+function Get-ChildItem {{ return [PSCustomObject]@{{ DisplayName = 'Oracle VirtualBox 7.1' }} }}
+function Get-ItemProperty {{ process {{ return $_ }} }}
+try {{ $null = Assert-WgContainerHostCompatibility; exit 2 }}
+catch {{ if ($_.Exception.Message -notmatch 'version could not be verified') {{ exit 3 }} }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_host_compatibility_accepts_current_virtualbox_name_and_version() -> None:
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-CimInstance {{ return [PSCustomObject]@{{ BuildNumber = '26200' }} }}
+function Test-Path {{
+    param($LiteralPath)
+    return $LiteralPath -eq 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
+}}
+function Get-ChildItem {{
+    return [PSCustomObject]@{{
+        DisplayName = 'Oracle VirtualBox 7.2.16'
+        DisplayVersion = '7.2.16'
+    }}
+}}
+function Get-ItemProperty {{ process {{ return $_ }} }}
+$result = Assert-WgContainerHostCompatibility
+if (@($result.VirtualBoxVersions).Count -ne 1) {{ exit 2 }}
+if ([version]$result.VirtualBoxVersions[0] -ne [version]'7.2.16') {{ exit 3 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_host_compatibility_rejects_incompatible_virtualbox() -> None:
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-CimInstance {{ return [PSCustomObject]@{{ BuildNumber = '26200' }} }}
+function Test-Path {{
+    param($LiteralPath)
+    return $LiteralPath -eq 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
+}}
+function Get-ChildItem {{
+    return [PSCustomObject]@{{
+        DisplayName = 'Oracle VM VirtualBox 5.2'
+        DisplayVersion = '5.2'
+    }}
+}}
+function Get-ItemProperty {{ process {{ return $_ }} }}
+try {{ $null = Assert-WgContainerHostCompatibility; exit 2 }}
+catch {{ if ($_.Exception.Message -notmatch 'incompatible') {{ exit 3 }} }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
 def test_docker_settings_default_ignores_redirected_appdata(tmp_path: Path) -> None:
     fake_settings = tmp_path / "Docker" / "settings-store.json"
     fake_settings.parent.mkdir()

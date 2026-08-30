@@ -54,10 +54,13 @@ def test_system_upgrade_resume_uses_exact_bounded_current_user_runonce() -> None
     assert "$maximumSameFailures = 2" in resume
     assert '"Global\\WhaleGuardSystemUpgradeResume"' in resume
     assert "resume_attempt -ge $maximumResumeAttempts" in resume
-    assert "resume_attempt -lt $maximumResumeAttempts" in resume
     assert "same_failure_count -ge $maximumSameFailures" in resume
-    assert "same_failure_count -lt $maximumSameFailures" in resume
     assert "Remove-SystemUpgradeRunOnce" in resume
+    assert "[switch]$DisableRetry" in resume
+    assert "SYSTEM_UPGRADE_RESUME_RETRY_DISABLED" in resume
+    assert 'Event "retry-not-armed"' in resume
+    handoff_failure = resume.split("Record-SystemUpgradeFailure", 2)[-1]
+    assert "Set-SystemUpgradeRunOnce" not in handoff_failure
     assert "ScheduledTask" not in resume
     assert "schtasks" not in resume.lower()
     assert "SpecialFolder]::Startup" not in resume
