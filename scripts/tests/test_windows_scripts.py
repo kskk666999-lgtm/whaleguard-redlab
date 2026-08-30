@@ -251,6 +251,11 @@ def test_container_setup_keeps_per_user_resume_and_docker_local_only() -> None:
     assert "Add-Type -AssemblyName System.Net.Http" in resume
     assert "Assert-WgNoDockerClientOverrides" in resume
     assert "Test-WgDockerEngineReady" in resume
+    assert "Invoke-WgExternalCommandToHost -FilePath $FilePath" in resume
+    hello_world_index = resume.index('Invoke-Checked -Label "Docker hello-world"')
+    assert resume.index("Get-WgDockerDesktopWslBackendEvidence") < hello_world_index
+    assert resume.index("Assert-WgNoDockerTcp2375Listener") < hello_world_index
+    assert hello_world_index < resume.index("Get-WgDockerDesktopWslRuntimeEvidence")
     assert '"--host", $dockerTarget.Endpoint' in resume
     assert "Get-WgComposeBaseArguments -Endpoint $dockerTarget.Endpoint" in resume
     assert '"--project-name", $projectName' in common

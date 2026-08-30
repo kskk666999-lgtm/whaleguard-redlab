@@ -65,9 +65,9 @@ function Invoke-Checked {
     $previous = Get-Location
     try {
         if ($WorkingDirectory) { Set-Location -LiteralPath $WorkingDirectory }
-        & $FilePath @Arguments
-        if ($LASTEXITCODE -ne 0) {
-            throw "$Label failed with exit code $LASTEXITCODE."
+        $exitCode = Invoke-WgExternalCommandToHost -FilePath $FilePath -Arguments $Arguments
+        if ($exitCode -ne 0) {
+            throw "$Label failed with exit code $exitCode."
         }
     }
     finally {
@@ -392,18 +392,19 @@ try {
     if (-not $serverReady) { throw "Docker Engine did not become ready within $EngineTimeoutSeconds seconds." }
 
     $dockerTarget = Get-LocalDockerTarget -DockerCli $dockerCli
-    $runtimeSecurity = Assert-WgDockerRuntimeSecurity -Docker $dockerCli -Endpoint $dockerTarget.Endpoint
     $backendEvidence = Get-WgDockerDesktopWslBackendEvidence
-    $wslRuntimeEvidence = Get-WgDockerDesktopWslRuntimeEvidence -WslPath $wsl
     $confirmedWslVersion = Get-WgWslVersion -WslPath $wsl
     if ($null -eq $confirmedWslVersion -or $confirmedWslVersion -lt [version]"2.1.5") {
         throw "WSL 2.1.5 or newer was not available while validating the Docker Desktop WSL2 backend."
     }
-    Write-Host "Docker Desktop security: OSType=$($runtimeSecurity.OSType), WSL2=$($wslRuntimeEvidence.Distribution)/v$($wslRuntimeEvidence.Version)/running, TCP2375=false, Kubernetes=false (settings: $($backendEvidence.SettingsPath); WSL: $confirmedWslVersion)"
+    Assert-WgNoDockerTcp2375Listener
     $plugin = Get-WgTrustedDockerPluginConfig
     Invoke-Checked -Label "Docker Compose plugin" -FilePath $dockerCli -Arguments @("--config", $plugin.ConfigDirectory, "--host", $dockerTarget.Endpoint, "compose", "version")
     Write-State -Phase "hello-world"
     Invoke-Checked -Label "Docker hello-world" -FilePath $dockerCli -Arguments @("--config", $plugin.ConfigDirectory, "--host", $dockerTarget.Endpoint, "run", "--rm", "hello-world")
+    $runtimeSecurity = Assert-WgDockerRuntimeSecurity -Docker $dockerCli -Endpoint $dockerTarget.Endpoint
+    $wslRuntimeEvidence = Get-WgDockerDesktopWslRuntimeEvidence -WslPath $wsl
+    Write-Host "Docker Desktop security: OSType=$($runtimeSecurity.OSType), WSL2=$($wslRuntimeEvidence.Distribution)/v$($wslRuntimeEvidence.Version)/running, TCP2375=false, Kubernetes=false (settings: $($backendEvidence.SettingsPath); WSL: $confirmedWslVersion)"
 
     $envPath = Ensure-WgEnvironment
     $composeBaseArguments = @(Get-WgComposeBaseArguments -Endpoint $dockerTarget.Endpoint)
