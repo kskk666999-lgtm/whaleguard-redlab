@@ -379,8 +379,8 @@ try {
         if ($dockerCli) {
             try {
                 $dockerTarget = Get-LocalDockerTarget -DockerCli $dockerCli
-                & $dockerCli --host $dockerTarget.Endpoint version --format "{{.Server.Version}}" 2>$null
-                $serverReady = $LASTEXITCODE -eq 0
+                $serverReady = Test-WgDockerEngineReady `
+                    -Docker $dockerCli -Endpoint $dockerTarget.Endpoint
             }
             catch {
                 if ($_.Exception.Message -notmatch "^Unable to (determine|inspect)") { throw }

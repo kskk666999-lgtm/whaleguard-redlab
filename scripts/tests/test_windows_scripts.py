@@ -250,6 +250,7 @@ def test_container_setup_keeps_per_user_resume_and_docker_local_only() -> None:
     assert "-File $elevatedScript" not in setup
     assert "Add-Type -AssemblyName System.Net.Http" in resume
     assert "Assert-WgNoDockerClientOverrides" in resume
+    assert "Test-WgDockerEngineReady" in resume
     assert '"--host", $dockerTarget.Endpoint' in resume
     assert "Get-WgComposeBaseArguments -Endpoint $dockerTarget.Endpoint" in resume
     assert '"--project-name", $projectName' in common
@@ -620,6 +621,78 @@ def test_external_command_host_output_does_not_contaminate_return_value(tmp_path
 $result = @(Invoke-WgExternalCommandToHost -FilePath {ps_quote(fake_command)})
 if ($result.Count -ne 1) {{ exit 2 }}
 if ([int]$result[0] -ne 7) {{ exit 3 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_external_command_capture_keeps_native_stderr_non_terminating(tmp_path: Path) -> None:
+    fake_command = tmp_path / "engine-not-ready.cmd"
+    fake_command.write_text(
+        "@echo off\r\necho simulated named-pipe startup error 1>&2\r\nexit /b 7\r\n",
+        encoding="ascii",
+    )
+    source = f"""
+. {ps_quote(COMMON)}
+$ErrorActionPreference = 'Stop'
+$result = Invoke-WgExternalCommandCapture -FilePath {ps_quote(fake_command)}
+if ($result.ExitCode -ne 7) {{ exit 2 }}
+if (@($result.Output).Count -ne 0) {{ exit 3 }}
+if ($ErrorActionPreference -ne 'Stop') {{ exit 4 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_local_docker_context_failure_is_normalized_under_stop(tmp_path: Path) -> None:
+    fake_docker = tmp_path / "docker.cmd"
+    fake_docker.write_text(
+        "@echo off\r\necho simulated context failure 1>&2\r\nexit /b 7\r\n",
+        encoding="ascii",
+    )
+    source = f"""
+. {ps_quote(COMMON)}
+$ErrorActionPreference = 'Stop'
+try {{ $null = Get-WgLocalDockerTarget -Docker {ps_quote(fake_docker)}; exit 2 }}
+catch {{
+    $expectedMessage = '^Unable to determine the active Docker context'
+    if ($_.Exception.Message -notmatch $expectedMessage) {{ exit 3 }}
+}}
+if ($ErrorActionPreference -ne 'Stop') {{ exit 4 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_docker_engine_readiness_probe_accepts_only_local_pipe_failures(tmp_path: Path) -> None:
+    not_ready = tmp_path / "docker-not-ready.cmd"
+    ready = tmp_path / "docker-ready.cmd"
+    not_ready.write_text(
+        "@echo off\r\necho simulated named-pipe startup error 1>&2\r\nexit /b 7\r\n",
+        encoding="ascii",
+    )
+    ready.write_text("@echo off\r\necho 29.7.2\r\nexit /b 0\r\n", encoding="ascii")
+    source = f"""
+. {ps_quote(COMMON)}
+$ErrorActionPreference = 'Stop'
+$endpoint = 'npipe:////./pipe/docker_engine'
+if (Test-WgDockerEngineReady -Docker {ps_quote(not_ready)} -Endpoint $endpoint) {{ exit 2 }}
+if (-not (Test-WgDockerEngineReady -Docker {ps_quote(ready)} -Endpoint $endpoint)) {{ exit 3 }}
+try {{
+    $null = Test-WgDockerEngineReady `
+        -Docker {ps_quote(ready)} -Endpoint 'ssh://prod.example.invalid'
+    exit 4
+}}
+catch {{ if ($_.Exception.Message -notmatch 'restricted to trusted local') {{ exit 5 }} }}
+try {{
+    $null = Test-WgDockerEngineReady `
+        -Docker {ps_quote(tmp_path / "missing-docker.exe")} -Endpoint $endpoint
+    exit 6
+}}
+catch {{ }}
 exit 0
 """
     result = run_ps(source)

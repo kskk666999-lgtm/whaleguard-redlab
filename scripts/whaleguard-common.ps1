@@ -46,6 +46,30 @@ function Invoke-WgExternalCommandToHost {
     return $exitCode
 }
 
+function Invoke-WgExternalCommandCapture {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @()
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 can promote native stderr to a terminating
+        # error when the caller uses Stop. Capture the command result first so
+        # callers can make an explicit, bounded decision from its exit code.
+        $ErrorActionPreference = "Continue"
+        $output = @(& $FilePath @Arguments 2>$null)
+        $exitCode = [int]$LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output = @($output)
+    }
+}
+
 function Assert-WgNoReparsePointInPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -1001,13 +1025,17 @@ function Get-WgLocalDockerTarget {
     if (-not $Docker) { $Docker = Get-WgDocker }
     Assert-WgNoDockerClientOverrides
 
-    $contextOutput = @(& $Docker context show 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $contextOutput.Count -eq 0) {
+    $contextResult = Invoke-WgExternalCommandCapture -FilePath $Docker -Arguments @("context", "show")
+    $contextOutput = @($contextResult.Output)
+    if ($contextResult.ExitCode -ne 0 -or $contextOutput.Count -eq 0) {
         throw "Unable to determine the active Docker context; refusing to continue."
     }
     $contextName = ([string]$contextOutput[0]).Trim()
-    $endpointOutput = @(& $Docker context inspect $contextName --format "{{.Endpoints.docker.Host}}" 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $endpointOutput.Count -eq 0) {
+    $endpointResult = Invoke-WgExternalCommandCapture -FilePath $Docker -Arguments @(
+        "context", "inspect", $contextName, "--format", "{{.Endpoints.docker.Host}}"
+    )
+    $endpointOutput = @($endpointResult.Output)
+    if ($endpointResult.ExitCode -ne 0 -or $endpointOutput.Count -eq 0) {
         throw "Unable to inspect the active Docker context; refusing to continue."
     }
     $contextEndpoint = ([string]$endpointOutput[0]).Trim()
@@ -1018,6 +1046,21 @@ function Get-WgLocalDockerTarget {
         ContextName = $contextName
         Endpoint = $contextEndpoint
     }
+}
+
+function Test-WgDockerEngineReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$Docker,
+        [Parameter(Mandatory = $true)][string]$Endpoint
+    )
+
+    if (-not (Test-WgLocalDockerEndpoint -Endpoint $Endpoint)) {
+        throw "Docker Engine readiness probes are restricted to trusted local Windows named pipes."
+    }
+    $probe = Invoke-WgExternalCommandCapture -FilePath $Docker -Arguments @(
+        "--host", $Endpoint, "version", "--format", "{{.Server.Version}}"
+    )
+    return $probe.ExitCode -eq 0
 }
 
 function Assert-WgLocalDockerContext {
