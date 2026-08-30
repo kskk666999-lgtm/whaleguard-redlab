@@ -610,7 +610,7 @@ function Test-WgDockerBinaryMetadata {
     if ($SignatureStatus -ne "Valid") { return $false }
     if ($SignerSubject -notmatch "(?i)(^|,\s*)CN=Docker Inc\.?(,|$)") { return $false }
     $allowedProducts = switch ($Kind) {
-        "Desktop" { @("Docker Desktop") }
+        "Desktop" { @("Docker Desktop", "Docker Desktop Launcher") }
         "Cli" { @("Docker", "Docker CLI", "Docker Client") }
         "Installer" { @("Docker Desktop", "Docker Desktop Installer") }
         "Compose" { @("Docker", "Docker Compose", "Docker Compose CLI", "Docker CLI Plugin") }
@@ -636,6 +636,44 @@ function ConvertTo-WgDockerProductVersion {
     catch { throw "Docker product version metadata is invalid." }
 }
 
+function Invoke-WgDockerComposeVersionProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [ValidateRange(1, 60)][int]$TimeoutSeconds = 15
+    )
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Path
+    $startInfo.Arguments = "version --short"
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    $startInfo.StandardErrorEncoding = New-Object System.Text.UTF8Encoding($false)
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) { throw "Unable to start the Docker Compose version probe." }
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $process.Kill()
+            $process.WaitForExit()
+            throw "Docker Compose version probe timed out."
+        }
+        $output = ($process.StandardOutput.ReadToEnd() + [Environment]::NewLine + $process.StandardError.ReadToEnd()).Trim()
+        if ($process.ExitCode -ne 0) { throw "Docker Compose version probe failed." }
+        $match = [regex]::Match($output, "(?m)^\s*v?([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)\s*$")
+        if (-not $match.Success) { throw "Docker Compose version output is invalid." }
+        try { return [version]$match.Groups[1].Value }
+        catch { throw "Docker Compose version output is invalid." }
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 function Get-WgDockerBinaryEvidence {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -653,6 +691,17 @@ function Get-WgDockerBinaryEvidence {
     $productName = [string]$item.VersionInfo.ProductName
     $productVersion = [string]$item.VersionInfo.ProductVersion
     if (-not $productVersion) { $productVersion = [string]$item.VersionInfo.FileVersion }
+    if ($Kind -eq "Compose" -and -not $productName -and -not $productVersion) {
+        if (
+            [string]$signature.Status -ne "Valid" -or
+            $signerSubject -notmatch "(?i)(^|,\s*)CN=Docker Inc\.?(,|$)"
+        ) {
+            throw "Docker Compose binary failed publisher validation."
+        }
+        $composeVersion = Invoke-WgDockerComposeVersionProbe -Path $resolvedPath
+        $productName = "Docker Compose"
+        $productVersion = $composeVersion.ToString()
+    }
     if (-not (Test-WgDockerBinaryMetadata -SignatureStatus ([string]$signature.Status) -SignerSubject $signerSubject -ProductName $productName -ProductVersion $productVersion -Kind $Kind)) {
         throw "Docker $Kind binary failed publisher, product-name, or version validation."
     }

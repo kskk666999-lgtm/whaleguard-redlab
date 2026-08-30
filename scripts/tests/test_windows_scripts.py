@@ -314,6 +314,10 @@ $validDesktop = Test-WgDockerBinaryMetadata `
     -SignatureStatus 'Valid' -SignerSubject $dockerSubject `
     -ProductName 'Docker Desktop' -ProductVersion '4.88.1.0' -Kind 'Desktop'
 if (-not $validDesktop) {{ exit 2 }}
+$validDesktopLauncher = Test-WgDockerBinaryMetadata `
+    -SignatureStatus 'Valid' -SignerSubject $dockerSubject `
+    -ProductName 'Docker Desktop Launcher' -ProductVersion '4.88.1.237512' -Kind 'Desktop'
+if (-not $validDesktopLauncher) {{ exit 11 }}
 $validCli = Test-WgDockerBinaryMetadata `
     -SignatureStatus 'Valid' -SignerSubject $dockerSubject `
     -ProductName 'Docker' -ProductVersion '29.2.0' -Kind 'Cli'
@@ -346,6 +350,26 @@ $invalidVersion = Test-WgDockerBinaryMetadata `
     -SignatureStatus 'Valid' -SignerSubject $dockerSubject `
     -ProductName 'Docker' -ProductVersion 'not-a-version' -Kind 'Cli'
 if ($invalidVersion) {{ exit 9 }}
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_docker_compose_version_probe_is_bounded_and_strict(tmp_path: Path) -> None:
+    valid_probe = tmp_path / "valid-compose.cmd"
+    invalid_probe = tmp_path / "invalid-compose.cmd"
+    valid_probe.write_text("@echo off\r\necho 5.4.0\r\nexit /b 0\r\n", encoding="ascii")
+    invalid_probe.write_text("@echo off\r\necho latest\r\nexit /b 0\r\n", encoding="ascii")
+    source = f"""
+. {ps_quote(COMMON)}
+$version = Invoke-WgDockerComposeVersionProbe -Path {ps_quote(valid_probe)} -TimeoutSeconds 2
+if ($version -ne [version]'5.4.0') {{ exit 2 }}
+try {{
+    $null = Invoke-WgDockerComposeVersionProbe -Path {ps_quote(invalid_probe)} -TimeoutSeconds 2
+    exit 3
+}}
+catch {{ if ($_.Exception.Message -notmatch 'output is invalid') {{ exit 4 }} }}
+exit 0
 """
     result = run_ps(source)
     assert result.returncode == 0, result.stderr + result.stdout
