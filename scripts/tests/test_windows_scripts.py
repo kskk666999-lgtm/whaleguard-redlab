@@ -389,7 +389,8 @@ def test_docker_runtime_security_requires_linux_and_no_tcp_2375(tmp_path: Path) 
 function Get-NetTCPConnection {{
     [CmdletBinding()]
     param([string]$State, [int]$LocalPort)
-    return @()
+    if ($PSBoundParameters.ContainsKey('LocalPort')) {{ throw 'narrow no-match query is unsafe' }}
+    return [PSCustomObject]@{{ LocalAddress = '127.0.0.1'; LocalPort = 5432 }}
 }}
 $evidence = Assert-WgDockerRuntimeSecurity -Docker {ps_quote(fake_docker)} -Endpoint 'npipe:////./pipe/docker_engine'
 if ($evidence.OSType -ne 'linux' -or $evidence.Tcp2375Listening) {{ exit 2 }}

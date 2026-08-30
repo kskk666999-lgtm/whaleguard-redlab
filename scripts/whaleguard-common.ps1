@@ -1004,7 +1004,10 @@ function Assert-WgNoDockerTcp2375Listener {
     $command = Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue
     if (-not $command) { throw "TCP 2375 exposure cannot be verified on this Windows host." }
     try {
-        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 2375 -ErrorAction Stop)
+        $listeners = @(
+            Get-NetTCPConnection -State Listen -ErrorAction Stop |
+                Where-Object { $_.LocalPort -eq 2375 }
+        )
     }
     catch {
         throw "TCP 2375 exposure could not be verified; refusing to continue."
