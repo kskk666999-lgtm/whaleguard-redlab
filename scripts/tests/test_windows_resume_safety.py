@@ -232,9 +232,18 @@ def test_windows_upgrade_snapshot_is_local_bounded_and_non_mutating() -> None:
     assert '"snapshot-manifest.json"' in snapshot
     assert '"SHA256SUMS.txt"' in snapshot
     assert '"Global\\WhaleGuardWindowsUpgradeSnapshot"' in snapshot
-    assert 'Get-ItemPropertyValue -LiteralPath $path -Name "WhaleGuardSetupResume"' in snapshot
+    assert "$key.GetValueNames()" in snapshot
+    assert "Assert-SnapshotLocalFixedPath -Path $WindowsUpdateScreenshot" in snapshot
+    assert "Assert-PreRestartSnapshotBoundary" in snapshot
+    assert "WhaleGuard RunOnce must be readable and absent" in snapshot
     assert "source_hash_verified = $true" in snapshot
     assert "A snapshot checksum verification failed" in snapshot
+    assert "$writtenHashLines = @(Get-Content" in snapshot
+    assert "\"$snapshotDirectory.tmp-$([Guid]::NewGuid().ToString('N'))\"" in snapshot
+    assert "Move-Item -LiteralPath $temporaryDirectory -Destination $snapshotDirectory" in snapshot
+    assert "checksum_manifest_sha256 = $checksumManifestHash" in snapshot
+    assert "& git" not in snapshot
+    assert "git status" not in snapshot.lower()
     for forbidden in (
         "Microsoft.Update.Session",
         "wevtutil",
@@ -252,6 +261,72 @@ def test_windows_upgrade_snapshot_is_local_bounded_and_non_mutating() -> None:
         "docker",
     ):
         assert forbidden.lower() not in snapshot.lower()
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
+def test_windows_upgrade_snapshot_boundary_guards_behave_in_powershell() -> None:
+    script_path = str(ROOT / "scripts" / "capture-windows-upgrade-snapshot.ps1").replace("'", "''")
+    command = rf"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    '{script_path}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count -ne 0) {{ throw 'Snapshot script did not parse.' }}
+foreach ($functionName in @(
+    'Assert-SnapshotLocalFixedPath',
+    'Assert-PreRestartSnapshotBoundary'
+)) {{
+    $functionAst = $ast.Find({{
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq $functionName
+    }}, $true)
+    if ($null -eq $functionAst) {{ throw "Missing function: $functionName" }}
+    Invoke-Expression $functionAst.Extent.Text
+}}
+
+Assert-SnapshotLocalFixedPath -Path 'C:\definitely-not-opened.png'
+$uncRejected = $false
+try {{ Assert-SnapshotLocalFixedPath -Path '\\server\share\evidence.png' }}
+catch {{ $uncRejected = $true }}
+if (-not $uncRejected) {{ throw 'UNC evidence path was not rejected.' }}
+
+$goodRunOnce = [PSCustomObject]@{{ readable = $true; whaleguard_setup_resume_present = $false }}
+$goodState = [PSCustomObject]@{{
+    schema_version = 3
+    phase = 'waiting-second-official-restart'
+    runonce_enabled = $false
+    resume_attempt = 0
+    same_failure_count = 0
+    last_failure = ''
+    target_display_version = '25H2'
+    target_minimum_build = 26200
+}}
+Assert-PreRestartSnapshotBoundary -RunOnceStatus $goodRunOnce -ResumeState $goodState
+
+$badRunOnce = [PSCustomObject]@{{ readable = $true; whaleguard_setup_resume_present = $true }}
+$runOnceRejected = $false
+try {{ Assert-PreRestartSnapshotBoundary -RunOnceStatus $badRunOnce -ResumeState $goodState }}
+catch {{ $runOnceRejected = $true }}
+if (-not $runOnceRejected) {{ throw 'Present RunOnce value was not rejected.' }}
+
+$badState = $goodState.PSObject.Copy()
+$badState.runonce_enabled = $true
+$stateRejected = $false
+try {{ Assert-PreRestartSnapshotBoundary -RunOnceStatus $goodRunOnce -ResumeState $badState }}
+catch {{ $stateRejected = $true }}
+if (-not $stateRejected) {{ throw 'Unsafe resume state was not rejected.' }}
+'PASS'
+"""
+    result = subprocess.run(  # noqa: S603
+        [POWERSHELL, "-NoProfile", "-Command", command],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == "PASS"
 
 
 def test_resume_stops_owned_compose_stack_before_local_dev_processes() -> None:
