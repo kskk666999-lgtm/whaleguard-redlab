@@ -252,6 +252,7 @@ def test_container_setup_keeps_per_user_resume_and_docker_local_only() -> None:
     assert "Assert-WgNoDockerClientOverrides" in resume
     assert "Test-WgDockerEngineReady" in resume
     assert "Invoke-WgExternalCommandToHost -FilePath $FilePath" in resume
+    assert "Retaining the recently verified Docker installer" in resume
     hello_world_index = resume.index('Invoke-Checked -Label "Docker hello-world"')
     assert resume.index("Get-WgDockerDesktopWslBackendEvidence") < hello_world_index
     assert resume.index("Assert-WgNoDockerTcp2375Listener") < hello_world_index
@@ -478,7 +479,7 @@ def test_docker_supply_chain_uses_only_trusted_canonical_binaries_and_fresh_inst
     assert '"download", "--id", "Docker.DockerDesktop", "--exact", "--source", "winget"' in resume
     assert "[Environment+SpecialFolder]::LocalApplicationData" in resume
     assert 'Get-WgDockerBinaryEvidence -Path $Path -Kind "Installer"' in resume
-    assert "Remove-Item -LiteralPath $installer -Force" in resume
+    assert "Remove-Item -LiteralPath $installer -Force" not in resume
     assert "$installer = Get-OfficialDockerInstaller" in resume
     assert "$desktopEvidence.Version -lt $installerEvidence.Version" in resume
     assert "Get-WgTrustedDockerBundleEvidence" in common

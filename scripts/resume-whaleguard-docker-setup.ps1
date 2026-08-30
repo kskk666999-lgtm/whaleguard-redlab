@@ -345,7 +345,7 @@ try {
                 (Test-Path -LiteralPath $installer -PathType Leaf) -and
                 [string]::Equals([IO.Path]::GetFullPath($installer), [IO.Path]::GetFullPath($installerPath), [StringComparison]::OrdinalIgnoreCase)
             ) {
-                Remove-Item -LiteralPath $installer -Force
+                Write-Host "Retaining the recently verified Docker installer for bounded local recovery."
             }
         }
     }
