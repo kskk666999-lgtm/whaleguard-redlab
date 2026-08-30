@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -28,6 +29,8 @@ from .scoring import aggregate_scores, score_metrics
 
 logger = logging.getLogger("whaleguard.runner")
 
+_RUN_STATE_LOCKS = tuple(threading.RLock() for _ in range(64))
+
 try:
     from whaleguard_worker.evaluator import evaluate_rules as shared_evaluate_rules
 except ImportError:  # Standalone API installs retain an equivalent rules fallback.
@@ -46,6 +49,21 @@ def append_event(run: TestRun, event: str, message: str, **data) -> None:
         }
     )
     run.event_log = events[-1000:]
+
+
+def run_state_lock(run_id: UUID) -> threading.RLock:
+    """Serialize JSON state updates for one run in single-process SQLite deployments."""
+    return _RUN_STATE_LOCKS[run_id.int % len(_RUN_STATE_LOCKS)]
+
+
+def get_run_for_update(db, run_id: UUID) -> TestRun | None:
+    """Lock one run row on databases that support SELECT FOR UPDATE."""
+    return db.scalar(
+        select(TestRun)
+        .where(TestRun.id == run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
 
 
 def _safe_mock_result(case: TestCase) -> dict:
@@ -464,26 +482,6 @@ def _persist_case_result(
     score, explanation, score_detail = score_metrics(metrics)
     score_detail["evaluation_mode"] = run.evaluation_mode
     score_detail["llm_judge"] = judge_detail
-    queue_job_id = enqueue_rule_evaluation(
-        run.id,
-        {
-            "id": case.case_key,
-            "evaluator": case.evaluator,
-            "expected_behavior": case.expected_behavior,
-            "forbidden_behavior": case.forbidden_behavior,
-        },
-        str(output["output"]),
-        output["trace"],
-        latency_ms,
-    )
-    if queue_job_id:
-        append_event(
-            run,
-            "evaluation.queued",
-            "确定性规则复核已提交 RQ worker",
-            job_id=queue_job_id,
-            test_case_id=str(case.id),
-        )
     result = TestResult(
         run_id=run.id,
         test_case_id=case.id,
@@ -579,6 +577,39 @@ def _persist_case_result(
     )
     db.commit()
     return True
+
+
+def _enqueue_persisted_evaluations(db, run: TestRun) -> None:
+    """Dispatch rule rechecks only after every case result is durably persisted."""
+    rows = db.execute(
+        select(TestResult, TestCase)
+        .join(TestCase, TestResult.test_case_id == TestCase.id)
+        .where(TestResult.run_id == run.id)
+        .order_by(TestResult.created_at, TestResult.id)
+    ).all()
+    for result, case in rows:
+        output = result.raw_output or {}
+        trace = output.get("trace")
+        queue_job_id = enqueue_rule_evaluation(
+            run.id,
+            {
+                "id": case.case_key,
+                "evaluator": case.evaluator,
+                "expected_behavior": case.expected_behavior,
+                "forbidden_behavior": case.forbidden_behavior,
+            },
+            str(output.get("output", "")),
+            trace if isinstance(trace, list) else [],
+            result.latency_ms,
+        )
+        if queue_job_id:
+            append_event(
+                run,
+                "evaluation.queued",
+                "确定性规则复核已提交 RQ worker",
+                job_id=queue_job_id,
+                test_case_id=str(case.id),
+            )
 
 
 def execute_run(run_id: UUID) -> None:
@@ -677,17 +708,23 @@ def execute_run(run_id: UUID) -> None:
                         return
 
             final_score, score_explanation = aggregate_scores(aggregate)
-            db.refresh(run)
-            worker_results = (run.score_explanation or {}).get("worker_results")
-            if worker_results:
-                score_explanation["worker_results"] = worker_results
-            run.security_score = final_score
-            run.score_explanation = score_explanation
-            run.progress = 100
-            run.status = "completed"
-            run.finished_at = datetime.now(UTC)
-            append_event(run, "run.completed", "测试运行完成", security_score=final_score)
-            db.commit()
+            with run_state_lock(run.id):
+                locked_run = get_run_for_update(db, run.id)
+                if locked_run is None:
+                    return
+                _enqueue_persisted_evaluations(db, locked_run)
+                locked_run.security_score = final_score
+                locked_run.score_explanation = score_explanation
+                locked_run.progress = 100
+                locked_run.status = "completed"
+                locked_run.finished_at = datetime.now(UTC)
+                append_event(
+                    locked_run,
+                    "run.completed",
+                    "测试运行完成",
+                    security_score=final_score,
+                )
+                db.commit()
         except TimeoutError:
             run.status = "failed"
             run.error_summary = "测试用例执行超过配置的超时时间。"

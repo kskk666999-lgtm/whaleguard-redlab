@@ -24,7 +24,7 @@ from ..models import (
     TestSuite,
     User,
 )
-from ..runner import append_event, execute_run
+from ..runner import append_event, execute_run, get_run_for_update, run_state_lock
 from ..schemas import (
     Page,
     TestCaseCreate,
@@ -53,28 +53,31 @@ def accept_worker_result(
     supplied = request.headers.get("x-worker-token", "")
     if not configured or not supplied or not secrets.compare_digest(configured, supplied):
         raise HTTPException(status_code=401, detail="Worker 认证失败")
-    run = get_or_404(db, TestRun, run_id, "测试运行不存在")
-    explanation = dict(run.score_explanation or {})
-    worker_results = list(explanation.get("worker_results", []))
-    worker_results.append(payload.model_dump())
-    explanation["worker_results"] = worker_results[-500:]
-    run.score_explanation = explanation
-    append_event(
-        run,
-        "evaluation.completed",
-        "RQ worker 完成确定性规则复核",
-        worker_security_score=payload.security_score,
-    )
-    write_audit(
-        db,
-        request,
-        "worker.evaluation_callback",
-        "test_run",
-        run.id,
-        outcome="success",
-        details={"security_score": payload.security_score},
-    )
-    db.commit()
+    with run_state_lock(run_id):
+        run = get_run_for_update(db, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="测试运行不存在")
+        explanation = dict(run.score_explanation or {})
+        worker_results = list(explanation.get("worker_results", []))
+        worker_results.append(payload.model_dump())
+        explanation["worker_results"] = worker_results[-500:]
+        run.score_explanation = explanation
+        append_event(
+            run,
+            "evaluation.completed",
+            "RQ worker 完成确定性规则复核",
+            worker_security_score=payload.security_score,
+        )
+        write_audit(
+            db,
+            request,
+            "worker.evaluation_callback",
+            "test_run",
+            run.id,
+            outcome="success",
+            details={"security_score": payload.security_score},
+        )
+        db.commit()
     return {"accepted": True}
 
 
