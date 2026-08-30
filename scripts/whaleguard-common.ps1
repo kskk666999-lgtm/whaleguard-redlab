@@ -1249,9 +1249,21 @@ function Invoke-WgCompose {
     $docker = Get-WgDocker
     $target = Get-WgLocalDockerTarget -Docker $docker
     Assert-WgComposeOwnership -Docker $docker -Endpoint $target.Endpoint
+    $plugin = Get-WgTrustedDockerPluginConfig
     $baseArguments = @(Get-WgComposeBaseArguments -Endpoint $target.Endpoint)
-    & $docker @baseArguments @Arguments
-    if ($LASTEXITCODE -ne 0) {
+    $previousDockerConfig = [Environment]::GetEnvironmentVariable("DOCKER_CONFIG", "Process")
+    try {
+        # Docker Compose can launch Buildx as a second-level CLI plugin. The
+        # global --config flag is not reliably inherited by that child, so set
+        # the already validated managed config only for this process tree.
+        [Environment]::SetEnvironmentVariable("DOCKER_CONFIG", $plugin.ConfigDirectory, "Process")
+        & $docker @baseArguments @Arguments
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable("DOCKER_CONFIG", $previousDockerConfig, "Process")
+    }
+    if ($exitCode -ne 0) {
         throw "docker compose failed: $($Arguments -join ' ')"
     }
 }

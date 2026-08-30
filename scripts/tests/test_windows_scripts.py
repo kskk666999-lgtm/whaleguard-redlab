@@ -546,6 +546,44 @@ exit 0
     assert result.returncode == 0, result.stderr + result.stdout
 
 
+def test_compose_propagates_managed_config_to_buildx_and_restores_caller(tmp_path: Path) -> None:
+    config_root = tmp_path / "docker config"
+    config_root.mkdir()
+    fake_docker = tmp_path / "docker.cmd"
+    fake_docker.write_text(
+        (
+            "@echo off\r\n"
+            f'if /I not "%DOCKER_CONFIG%"=="{config_root}" exit /b 8\r\n'
+            'if "%WG_TEST_DOCKER_FAIL%"=="1" exit /b 7\r\n'
+            "exit /b 0\r\n"
+        ),
+        encoding="ascii",
+    )
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgDocker {{ return {ps_quote(fake_docker)} }}
+function Get-WgLocalDockerTarget {{
+    return [PSCustomObject]@{{ Endpoint = 'npipe:////./pipe/docker_engine' }}
+}}
+function Assert-WgComposeOwnership {{ }}
+function Get-WgComposeBaseArguments {{ return @() }}
+function Get-WgTrustedDockerPluginConfig {{
+    return [PSCustomObject]@{{ ConfigDirectory = {ps_quote(config_root)} }}
+}}
+$env:DOCKER_CONFIG = 'caller-config'
+Invoke-WgCompose up
+if ($env:DOCKER_CONFIG -ne 'caller-config') {{ exit 2 }}
+$env:WG_TEST_DOCKER_FAIL = '1'
+try {{ Invoke-WgCompose up; exit 3 }}
+catch {{ if ($_.Exception.Message -notmatch 'docker compose failed') {{ exit 4 }} }}
+finally {{ $env:WG_TEST_DOCKER_FAIL = $null }}
+if ($env:DOCKER_CONFIG -ne 'caller-config') {{ exit 5 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
 def test_compose_project_name_is_stable_and_scoped_to_canonical_root(tmp_path: Path) -> None:
     first_root = tmp_path / "first checkout"
     second_root = tmp_path / "second checkout"
