@@ -129,6 +129,9 @@ def test_runtime_mode_and_private_mock_llm_are_explicit() -> None:
     smoke = (ROOT / "scripts" / "smoke-test.ps1").read_text(encoding="utf-8")
     assert 'ValidateSet("Docker", "Local")' in verify
     assert 'ValidateSet("Docker", "Local")' in smoke
+    assert "Invoke-WgCompose config --quiet" in verify
+    assert "Invoke-WgCompose up -d --build" in verify
+    assert 'Invoke-WgChecked -Label "Build and start complete Docker stack"' not in verify
     assert '"http://mock-llm:8101/v1"' in smoke
     assert '"http://127.0.0.1:8101/v1"' in smoke
     assert '"evaluation.completed"' in smoke
@@ -570,14 +573,17 @@ function Get-WgComposeBaseArguments {{ return @() }}
 function Get-WgTrustedDockerPluginConfig {{
     return [PSCustomObject]@{{ ConfigDirectory = {ps_quote(config_root)} }}
 }}
+$env:DOCKER_CONFIG = $null
+Invoke-WgCompose up
+if ($null -ne [Environment]::GetEnvironmentVariable('DOCKER_CONFIG', 'Process')) {{ exit 2 }}
 $env:DOCKER_CONFIG = 'caller-config'
 Invoke-WgCompose up
-if ($env:DOCKER_CONFIG -ne 'caller-config') {{ exit 2 }}
+if ($env:DOCKER_CONFIG -ne 'caller-config') {{ exit 3 }}
 $env:WG_TEST_DOCKER_FAIL = '1'
-try {{ Invoke-WgCompose up; exit 3 }}
-catch {{ if ($_.Exception.Message -notmatch 'docker compose failed') {{ exit 4 }} }}
+try {{ Invoke-WgCompose up; exit 4 }}
+catch {{ if ($_.Exception.Message -notmatch 'docker compose failed') {{ exit 5 }} }}
 finally {{ $env:WG_TEST_DOCKER_FAIL = $null }}
-if ($env:DOCKER_CONFIG -ne 'caller-config') {{ exit 5 }}
+if ($env:DOCKER_CONFIG -ne 'caller-config') {{ exit 6 }}
 exit 0
 """
     result = run_ps(source)

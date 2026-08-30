@@ -97,8 +97,9 @@ try {
     if ($dockerPath) {
         $target = Get-WgLocalDockerTarget -Docker $dockerPath
         Assert-WgComposeOwnership -Docker $dockerPath -Endpoint $target.Endpoint
-        $composeArguments = @(Get-WgComposeBaseArguments -Endpoint $target.Endpoint) + @("config", "--quiet")
-        Invoke-WgChecked -Label "Docker Compose canonical config" -File $dockerPath -Arguments $composeArguments -WorkingDirectory $root
+        Write-WgMessage -Message "==> Docker Compose canonical config" -Color "Cyan"
+        Invoke-WgCompose config --quiet
+        Write-WgMessage -Message "[PASS] Docker Compose canonical config" -Color "Green"
     }
     else {
         Write-WgMessage -Message "==> Docker CLI unavailable; canonical YAML/security validation passed, engine validation skipped." -Level "WARN" -Color "Yellow"
@@ -115,9 +116,10 @@ try {
             $dockerPath = Assert-WgDockerEngine
             $target = Get-WgLocalDockerTarget -Docker $dockerPath
             Assert-WgComposeOwnership -Docker $dockerPath -Endpoint $target.Endpoint
-            $composeArguments = @(Get-WgComposeBaseArguments -Endpoint $target.Endpoint) + @("up", "-d", "--build")
             $dockerStackAttempted = $true
-            Invoke-WgChecked -Label "Build and start complete Docker stack" -File $dockerPath -Arguments $composeArguments -WorkingDirectory $root
+            Write-WgMessage -Message "==> Build and start complete Docker stack" -Color "Cyan"
+            Invoke-WgCompose up -d --build
+            Write-WgMessage -Message "[PASS] Build and start complete Docker stack" -Color "Green"
             $null = Wait-WgStackHealthy -ApiPort ([int]$apiPort) -WebPort ([int]$webPort) -TimeoutSeconds 300
             if (-not $CredentialPath) {
                 $CredentialPath = Join-Path $root ".local\first-run-credentials.txt"

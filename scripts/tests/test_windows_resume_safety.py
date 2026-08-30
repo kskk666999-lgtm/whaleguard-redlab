@@ -591,9 +591,15 @@ def test_resume_stops_owned_compose_stack_before_local_dev_processes() -> None:
     assert ownership < compose_down < local_processes
 
 
-def test_verify_all_pins_docker_host_project_file_and_env_file() -> None:
+def test_verify_all_uses_guarded_compose_wrapper() -> None:
     verify = (ROOT / "scripts" / "verify-all.ps1").read_text(encoding="utf-8")
+    common = (ROOT / "scripts" / "whaleguard-common.ps1").read_text(encoding="utf-8")
 
-    assert verify.count("Get-WgComposeBaseArguments -Endpoint $target.Endpoint") >= 2
     assert verify.count("Assert-WgComposeOwnership") >= 2
-    assert 'Get-WgComposeBaseArguments -Endpoint $target.Endpoint) + @("up"' in verify
+    assert "Invoke-WgCompose config --quiet" in verify
+    assert "Invoke-WgCompose up -d --build" in verify
+    wrapper = common.split("function Invoke-WgCompose", 1)[1].split(
+        "function Get-WgExpectedServices", 1
+    )[0]
+    assert "Get-WgComposeBaseArguments -Endpoint $target.Endpoint" in wrapper
+    assert 'SetEnvironmentVariable("DOCKER_CONFIG", $plugin.ConfigDirectory' in wrapper
