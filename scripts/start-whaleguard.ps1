@@ -14,16 +14,19 @@ try {
     Write-WgMessage -Message "[2/5] Preparing persistent local secrets..." -Color "Cyan"
     $null = Ensure-WgEnvironment
     Write-WgMessage -Message "[3/5] Validating Compose configuration..." -Color "Cyan"
-    Invoke-WgCompose config --quiet
+    Invoke-WgCompose -Arguments @("config", "--quiet")
     Write-WgMessage -Message "[4/5] Building and starting WhaleGuard..." -Color "Cyan"
-    Invoke-WgCompose up -d --build
+    # Pass Compose switches through the explicit array parameter. PowerShell
+    # otherwise consumes `-d` as the common -Debug parameter before the wrapper
+    # can forward it to Docker Compose.
+    Invoke-WgCompose -Arguments @("up", "-d", "--build")
 
     $apiPort = Get-WgEnvValue -Name "API_PORT" -Default "8000"
     $webPort = Get-WgEnvValue -Name "WEB_PORT" -Default "3000"
     $webUrl = "http://127.0.0.1:$webPort"
     Write-WgMessage -Message "[5/5] Waiting for all eight services and API readiness..." -Color "Cyan"
     $null = Wait-WgStackHealthy -ApiPort ([int]$apiPort) -WebPort ([int]$webPort) -TimeoutSeconds $TimeoutSeconds
-    Invoke-WgCompose ps
+    Invoke-WgCompose -Arguments @("ps")
 
     $credentials = Join-Path $root ".local\first-run-credentials.txt"
     Write-WgMessage -Message ""

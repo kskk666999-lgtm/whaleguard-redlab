@@ -596,8 +596,8 @@ def test_verify_all_uses_guarded_compose_wrapper() -> None:
     common = (ROOT / "scripts" / "whaleguard-common.ps1").read_text(encoding="utf-8")
 
     assert verify.count("Assert-WgComposeOwnership") >= 2
-    assert "Invoke-WgCompose config --quiet" in verify
-    assert "Invoke-WgCompose up -d --build" in verify
+    assert 'Invoke-WgCompose -Arguments @("config", "--quiet")' in verify
+    assert 'Invoke-WgCompose -Arguments @("up", "-d", "--build")' in verify
     wrapper = common.split("function Invoke-WgCompose", 1)[1].split(
         "function Get-WgExpectedServices", 1
     )[0]

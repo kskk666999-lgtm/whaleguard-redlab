@@ -19,7 +19,7 @@ Push-Location $root
 try {
     $null = Assert-WgDockerEngine
     $null = Ensure-WgEnvironment
-    Invoke-WgCompose down --volumes --remove-orphans
+    Invoke-WgCompose -Arguments @("down", "--volumes", "--remove-orphans")
     $credentialPath = Join-Path $root ".local\first-run-credentials.txt"
     if (Test-Path -LiteralPath $credentialPath -PathType Leaf) {
         Remove-Item -LiteralPath $credentialPath -Force

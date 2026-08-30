@@ -28,7 +28,7 @@ try {
 
     if ($docker) {
         try {
-            Invoke-WgCompose config --quiet
+            Invoke-WgCompose -Arguments @("config", "--quiet")
             Write-WgMessage -Message "[OK] Compose configuration is valid." -Color "Green"
             $serviceSummary = @(Get-WgServiceHealthSummary -Status @(Get-WgComposeServiceStatus))
             foreach ($service in $serviceSummary) {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -129,13 +130,27 @@ def test_runtime_mode_and_private_mock_llm_are_explicit() -> None:
     smoke = (ROOT / "scripts" / "smoke-test.ps1").read_text(encoding="utf-8")
     assert 'ValidateSet("Docker", "Local")' in verify
     assert 'ValidateSet("Docker", "Local")' in smoke
-    assert "Invoke-WgCompose config --quiet" in verify
-    assert "Invoke-WgCompose up -d --build" in verify
+    assert 'Invoke-WgCompose -Arguments @("config", "--quiet")' in verify
+    assert 'Invoke-WgCompose -Arguments @("up", "-d", "--build")' in verify
     assert 'Invoke-WgChecked -Label "Build and start complete Docker stack"' not in verify
     assert '"http://mock-llm:8101/v1"' in smoke
     assert '"http://127.0.0.1:8101/v1"' in smoke
     assert '"evaluation.completed"' in smoke
     assert '"worker.evaluation_callback"' in smoke
+
+
+def test_compose_wrapper_calls_use_explicit_argument_arrays() -> None:
+    for script in (ROOT / "scripts").glob("*.ps1"):
+        for line_number, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if "Invoke-WgCompose" not in stripped or stripped.startswith(
+                "function Invoke-WgCompose"
+            ):
+                continue
+            assert "Invoke-WgCompose -Arguments @(" in stripped, (
+                f"{script.name}:{line_number} must pass Compose switches through the explicit "
+                "Arguments array so PowerShell common parameters cannot consume them"
+            )
 
 
 def test_docker_resume_requires_real_persistence_checks() -> None:
@@ -553,11 +568,13 @@ def test_compose_propagates_managed_config_to_buildx_and_restores_caller(tmp_pat
     config_root = tmp_path / "docker config"
     config_root.mkdir()
     fake_docker = tmp_path / "docker.cmd"
+    forwarded_args = tmp_path / "forwarded-args.txt"
     fake_docker.write_text(
         (
             "@echo off\r\n"
             f'if /I not "%DOCKER_CONFIG%"=="{config_root}" exit /b 8\r\n'
             'if "%WG_TEST_DOCKER_FAIL%"=="1" exit /b 7\r\n'
+            f'echo %*>>"{forwarded_args}"\r\n'
             "exit /b 0\r\n"
         ),
         encoding="ascii",
@@ -574,13 +591,15 @@ function Get-WgTrustedDockerPluginConfig {{
     return [PSCustomObject]@{{ ConfigDirectory = {ps_quote(config_root)} }}
 }}
 $env:DOCKER_CONFIG = $null
-Invoke-WgCompose up
+Invoke-WgCompose -Arguments @('up', '-d', '--build')
+$forwarded = (Get-Content -Raw -LiteralPath {ps_quote(forwarded_args)}).Trim()
+if ($forwarded -ne 'up -d --build') {{ exit 7 }}
 if ($null -ne [Environment]::GetEnvironmentVariable('DOCKER_CONFIG', 'Process')) {{ exit 2 }}
 $env:DOCKER_CONFIG = 'caller-config'
-Invoke-WgCompose up
+Invoke-WgCompose -Arguments @('up')
 if ($env:DOCKER_CONFIG -ne 'caller-config') {{ exit 3 }}
 $env:WG_TEST_DOCKER_FAIL = '1'
-try {{ Invoke-WgCompose up; exit 4 }}
+try {{ Invoke-WgCompose -Arguments @('up'); exit 4 }}
 catch {{ if ($_.Exception.Message -notmatch 'docker compose failed') {{ exit 5 }} }}
 finally {{ $env:WG_TEST_DOCKER_FAIL = $null }}
 if ($env:DOCKER_CONFIG -ne 'caller-config') {{ exit 6 }}
@@ -588,6 +607,62 @@ exit 0
 """
     result = run_ps(source)
     assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_compose_ownership_reads_labels_as_json_without_quoted_go_template(
+    tmp_path: Path,
+) -> None:
+    container_id = "a" * 64
+    owned_root = tmp_path / "owned project"
+    owned_root.mkdir()
+    config_root = tmp_path / "docker config"
+    config_root.mkdir()
+    labels_path = tmp_path / "labels.json"
+    forwarded_args = tmp_path / "forwarded-args.txt"
+    fake_docker = tmp_path / "docker.cmd"
+    fake_docker.write_text(
+        (
+            "@echo off\r\n"
+            f'echo %*>>"{forwarded_args}"\r\n'
+            'echo %* | findstr /C:" inspect " >nul\r\n'
+            "if %errorlevel%==0 (\r\n"
+            f'  type "{labels_path}"\r\n'
+            "  exit /b 0\r\n"
+            ")\r\n"
+            f"echo {container_id}\r\n"
+            "exit /b 0\r\n"
+        ),
+        encoding="ascii",
+    )
+    labels_path.write_text(
+        json.dumps({"com.docker.compose.project.working_dir": str(owned_root)}),
+        encoding="ascii",
+    )
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgRoot {{ return {ps_quote(owned_root)} }}
+function Get-WgComposeProjectName {{ return 'whaleguard-redlab-test' }}
+function Get-WgTrustedDockerPluginConfig {{
+    return [PSCustomObject]@{{ ConfigDirectory = {ps_quote(config_root)} }}
+}}
+Assert-WgComposeOwnership -Docker {ps_quote(fake_docker)} -Endpoint 'npipe:////./pipe/docker_engine'
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+    forwarded = forwarded_args.read_text(encoding="ascii").splitlines()
+    assert any("ps --all --quiet --no-trunc --filter" in line for line in forwarded)
+    inspect_arguments = forwarded[-1].strip()
+    assert f'--format "{{{{json .Config.Labels}}}}" {container_id}' in inspect_arguments
+    assert "com.docker.compose.project.working_dir" not in inspect_arguments
+
+    labels_path.write_text(
+        json.dumps({"com.docker.compose.project.working_dir": str(tmp_path / "different project")}),
+        encoding="ascii",
+    )
+    mismatch = run_ps(source.replace("exit 0", "", 1))
+    assert mismatch.returncode != 0
+    assert "owned by another working directory" in mismatch.stderr
 
 
 def test_compose_project_name_is_stable_and_scoped_to_canonical_root(tmp_path: Path) -> None:

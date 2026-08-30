@@ -98,7 +98,7 @@ try {
         $target = Get-WgLocalDockerTarget -Docker $dockerPath
         Assert-WgComposeOwnership -Docker $dockerPath -Endpoint $target.Endpoint
         Write-WgMessage -Message "==> Docker Compose canonical config" -Color "Cyan"
-        Invoke-WgCompose config --quiet
+        Invoke-WgCompose -Arguments @("config", "--quiet")
         Write-WgMessage -Message "[PASS] Docker Compose canonical config" -Color "Green"
     }
     else {
@@ -118,7 +118,7 @@ try {
             Assert-WgComposeOwnership -Docker $dockerPath -Endpoint $target.Endpoint
             $dockerStackAttempted = $true
             Write-WgMessage -Message "==> Build and start complete Docker stack" -Color "Cyan"
-            Invoke-WgCompose up -d --build
+            Invoke-WgCompose -Arguments @("up", "-d", "--build")
             Write-WgMessage -Message "[PASS] Build and start complete Docker stack" -Color "Green"
             $null = Wait-WgStackHealthy -ApiPort ([int]$apiPort) -WebPort ([int]$webPort) -TimeoutSeconds 300
             if (-not $CredentialPath) {

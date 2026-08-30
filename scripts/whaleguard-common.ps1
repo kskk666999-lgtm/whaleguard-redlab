@@ -1162,14 +1162,37 @@ function Assert-WgComposeOwnership {
 
     $plugin = Get-WgTrustedDockerPluginConfig
     $projectName = Get-WgComposeProjectName
-    $containerIds = @(& $Docker --config $plugin.ConfigDirectory --host $Endpoint ps --all --filter "label=com.docker.compose.project=$projectName" --format "{{.ID}}" 2>$null)
+    $containerIds = @(& $Docker --config $plugin.ConfigDirectory --host $Endpoint ps --all --quiet --no-trunc --filter "label=com.docker.compose.project=$projectName" 2>$null)
     if ($LASTEXITCODE -ne 0) { throw "Unable to validate existing WhaleGuard Compose ownership." }
     $expectedRoot = [IO.Path]::GetFullPath((Get-WgRoot))
     foreach ($containerIdValue in $containerIds) {
         $containerId = ([string]$containerIdValue).Trim()
         if (-not $containerId) { continue }
-        $workingDirectory = (& $Docker --config $plugin.ConfigDirectory --host $Endpoint inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' $containerId 2>$null | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or -not $workingDirectory) {
+        if ($containerId -notmatch "^[0-9a-f]{64}$") {
+            throw "An existing $projectName container returned an invalid full container ID."
+        }
+        # Ask Docker for labels only, then select the ownership label in
+        # PowerShell. Embedding the dotted label key inside a Go template loses
+        # its nested quotes under Windows PowerShell 5.1 native argument
+        # marshalling and turns the key into an unintended template function.
+        $labelsText = (& $Docker --config $plugin.ConfigDirectory --host $Endpoint inspect --format "{{json .Config.Labels}}" $containerId 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $labelsText) {
+            throw "An existing $projectName container lacks verifiable Compose ownership."
+        }
+        $workingDirectory = ""
+        try {
+            $labels = ConvertFrom-Json -InputObject $labelsText -ErrorAction Stop
+            if ($null -ne $labels) {
+                $workingDirectoryProperty = $labels.PSObject.Properties["com.docker.compose.project.working_dir"]
+                if ($workingDirectoryProperty) {
+                    $workingDirectory = ([string]$workingDirectoryProperty.Value).Trim()
+                }
+            }
+        }
+        catch {
+            throw "An existing $projectName container has invalid ownership labels."
+        }
+        if (-not $workingDirectory) {
             throw "An existing $projectName container lacks verifiable Compose ownership."
         }
         try { $resolvedWorkingDirectory = [IO.Path]::GetFullPath($workingDirectory) }

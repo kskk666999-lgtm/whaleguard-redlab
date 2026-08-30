@@ -3,7 +3,7 @@ $root = Get-WgRoot
 Push-Location $root
 try {
     $null = Assert-WgDockerEngine
-    Invoke-WgCompose stop
+    Invoke-WgCompose -Arguments @("stop")
     Write-Host "WhaleGuard containers stopped. Persistent data was kept." -ForegroundColor Green
 }
 catch {
