@@ -418,11 +418,42 @@ class TestRunResponse(ORMModel):
     cancellation_requested: bool
     security_score: float | None
     score_explanation: dict[str, Any]
-    event_log: list[dict[str, Any]]
+    event_log: list[dict[str, Any]] = Field(
+        description="兼容字段；新客户端应使用 /runs/{run_id}/event-history 或 SSE。",
+        deprecated=True,
+    )
     started_at: datetime | None
     finished_at: datetime | None
     error_summary: str | None
     requested_by_id: UUID
+
+
+class OutboxEventResponse(ORMModel):
+    event_type: str
+    aggregate_type: str
+    aggregate_id: UUID
+    payload: dict[str, Any]
+    status: str
+    attempt_count: int
+    next_attempt_at: datetime | None
+    processed_at: datetime | None
+
+
+class DeliveryReceiptResponse(ORMModel):
+    run_id: UUID
+    delivery_id: UUID
+    event_type: str
+    payload_hash: str
+    received_at: datetime
+    processed_at: datetime | None
+
+
+class RunEventResponse(ORMModel):
+    run_id: UUID
+    sequence: int
+    event_type: str
+    source: str
+    payload: dict[str, Any]
 
 
 class TestResultResponse(ORMModel):
@@ -627,6 +658,7 @@ class DashboardSummary(APIModel):
 
 
 class WorkerEvaluationResult(APIModel):
+    delivery_id: UUID
     attack_success: bool = False
     refusal_correct: bool | None = None
     over_refusal: bool = False

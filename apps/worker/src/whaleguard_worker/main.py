@@ -5,17 +5,46 @@ from pathlib import Path
 from uuid import uuid4
 
 from redis import Redis
+from redis.backoff import ConstantBackoff
+from redis.exceptions import BusyLoadingError, ConnectionError, RedisError, TimeoutError
+from redis.retry import Retry as RedisRetry
 from rq import Queue, Worker
 from rq.job import Job
 from rq.serializers import JSONSerializer
 
 _DEFAULT_WORKER_NAME_FILE = "/tmp/whaleguard-worker-name"  # noqa: S108
+_SCHEDULER_CHECK_INTERVAL_SECONDS = 5
+_REDIS_TRANSIENT_RETRIES = 20
+_REDIS_TRANSIENT_BACKOFF_SECONDS = 0.25
 
 
 class RestrictedWorker(Worker):
     """Execute only WhaleGuard's data-only evaluation job with no callbacks."""
 
     ALLOWED_JOB_FUNCTIONS = frozenset({"whaleguard_worker.jobs.evaluate_test_job"})
+
+    @property
+    def dequeue_timeout(self) -> int:
+        """Wake the parent often enough to supervise the RQ scheduler child."""
+
+        return min(super().dequeue_timeout, _SCHEDULER_CHECK_INTERVAL_SECONDS)
+
+    def run_maintenance_tasks(self) -> None:
+        """Keep PID 1 alive while Redis is briefly loading or reconnecting.
+
+        RQ's maintenance implementation already restarts a dead scheduler with
+        ``acquire_locks(auto_start=True)``. A short maintenance/dequeue interval
+        makes that self-healing prompt, while the native Redis lock remains the
+        sole leader-election mechanism.
+        """
+
+        try:
+            super().run_maintenance_tasks()
+        except RedisError as exc:
+            self.log.warning(
+                "Worker maintenance deferred during transient Redis state error_type=%s",
+                type(exc).__name__,
+            )
 
     @classmethod
     def is_allowed_job(cls, job: Job) -> bool:
@@ -66,7 +95,16 @@ def _publish_worker_name(worker_name: str) -> None:
 
 
 def main() -> None:
-    connection = Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    retryable_errors = (BusyLoadingError, ConnectionError, TimeoutError)
+    connection = Redis.from_url(
+        os.getenv("REDIS_URL", "redis://redis:6379/0"),
+        retry=RedisRetry(
+            ConstantBackoff(_REDIS_TRANSIENT_BACKOFF_SECONDS),
+            retries=_REDIS_TRANSIENT_RETRIES,
+            supported_errors=retryable_errors,
+        ),
+        retry_on_error=list(retryable_errors),
+    )
     worker_base_name = os.getenv("WORKER_NAME", "whaleguard-worker")[:64]
     worker_name = f"{worker_base_name or 'whaleguard-worker'}-{uuid4().hex}"
     queues = [
@@ -82,6 +120,7 @@ def main() -> None:
         name=worker_name,
         serializer=JSONSerializer,
         log_job_description=False,
+        maintenance_interval=_SCHEDULER_CHECK_INTERVAL_SECONDS,
     )
     _publish_worker_name(worker.name)
     worker.work(with_scheduler=True)

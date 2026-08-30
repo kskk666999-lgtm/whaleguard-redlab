@@ -2,15 +2,15 @@
 
 本指南使用 Docker Compose；对应的首次凭据文件是 `.local\first-run-credentials.txt`。本机 `make seed` 的 SQLite 凭据另存为 `.local\local-first-run-credentials.txt`，不能用于 Docker 数据库。
 
-## 当前验证主机状态
+## 当前验证状态
 
-当前主机是 Windows 11 家庭中文版 23H2 build 22631，并安装了 VirtualBox 5.2.30。两者均未通过仓库当前的一键安装兼容门禁。首轮 UAC 已接受，但 WSL web-download 返回 HTTP 403；VirtualMachinePlatform 仅暂存、尚未重启，没有注册自动续作入口，Docker CLI/Desktop/Engine 也未安装。因此当前主机尚未运行 Docker build/up、产品 smoke 或持久化测试。代码侧 137 项自动化回归已通过，但不能替代 Docker 运行证据。
+`v0.1.0` 基线已于 2026-08-31 在当前 Windows 主机完成 Docker 验收：8 个 Compose 服务全部 healthy，API `/ready` 数据库状态为 `ok`，产品 smoke、真实 RQ callback、`restart` 和完整 `down/up` 持久化均已通过。稳定 tag 指向 `a9746d65800e9ff5d590123d589282ecde09c409`。
 
-请先升级 Windows，并升级或卸载 VirtualBox 5.2.30。不要绕过门禁，也不要把 VMP 已暂存当作 WSL2/Docker 已可用。
+`v0.1.1 Hardening` 正在开发，必须在最终 commit 上重新执行全部 [发布门禁](docs/RELEASE.md)；上述 v0.1.0 结果不能直接继承为新版本证据。
 
 ## Windows 首次一键安装
 
-通过兼容门禁后，双击项目根目录的：
+双击项目根目录的：
 
 ```powershell
 .\INSTALL_WHALEGUARD_DOCKER.bat
@@ -24,16 +24,16 @@
 
 如果提升阶段失败且没有自动续作入口，请先修复日志所示阻塞，再重新运行安装入口，不要直接假设恢复阶段可以继续。安装与续作日志位于 `.local\setup-logs\`。
 
-## 已有 Docker 的运行门槛
+## 已有 Docker 的启动
 
-先在 PowerShell 执行：
+若当前 PowerShell 已能找到 Docker CLI，可先执行以下只读检查：
 
 ```powershell
 docker version
 docker compose version
 ```
 
-两条命令都必须成功并显示 Server/Compose 版本。若提示 `docker` 命令不存在，需先安装 Docker Desktop；若只有 Client、没有 Server，应启动 Docker Desktop 并等待 WSL2 Engine 就绪。不要在这两项失败时把后续 Compose 配置校验当成完整启动成功。
+两条命令成功时应同时显示 Server 和 Compose 版本。项目的一键脚本也支持经过签名验证的当前用户 Docker Desktop 安装，因此普通终端暂时找不到 `docker` 命令时，不应仅凭 PATH 结果判断 Docker 未安装；先运行 `CHECK_WHALEGUARD.bat` 或直接使用下方受控启动入口。若只有 Client、没有 Server，应启动 Docker Desktop 并等待 WSL2 Engine 就绪。不要把 Compose 配置解析通过当成完整启动成功。
 
 1. 安装并启动本地 Docker Desktop，等待状态显示 Engine running；远程 Docker context 会被默认拒绝。
 2. 双击项目根目录的 `START_WHALEGUARD.bat`。

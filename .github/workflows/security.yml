@@ -1,0 +1,250 @@
+name: Supply Chain Security
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+  PIP_VERSION: "26.2.1"
+  PIP_AUDIT_VERSION: "2.10.1"
+  SETUPTOOLS_VERSION: "84.0.0"
+  TRIVY_VERSION: "v0.74.0"
+  SYFT_VERSION: "v1.51.1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  dependency-review:
+    name: Dependency Review for PR changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Block newly introduced High/Critical dependencies
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          config-file: ./.github/dependency-review-config.yml
+
+  dependencies-and-filesystem:
+    name: Python, npm, secrets, filesystem
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Build an isolated Python audit environment
+        run: |
+          mkdir -p artifacts/security
+          python -m venv .audit-venv
+          . .audit-venv/bin/activate
+          python -m pip install "pip==${PIP_VERSION}"
+          python -m pip install "setuptools==${SETUPTOOLS_VERSION}"
+          python -m pip install -e './packages/policy-engine[test]'
+          python -m pip install -e './apps/worker[test]'
+          python -m pip install -e './apps/api[dev]'
+          python -m pip install -r labs/mock-llm/requirements-dev.txt
+          python -m pip install -r labs/mock-agent/requirements-dev.txt
+          python -m pip install -r labs/mock-mcp-server/requirements-dev.txt
+          python -m pip install "pip-audit==${PIP_AUDIT_VERSION}"
+          python -m pip freeze --all > artifacts/security/python-requirements.txt
+
+      - name: Run Python dependency audit and preserve every finding
+        run: |
+          . .audit-venv/bin/activate
+          set +e
+          python -m pip_audit --local --progress-spinner off --format json \
+            --output artifacts/security/pip-audit.json
+          audit_status=$?
+          set -e
+          printf '%s\n' "${audit_status}" > artifacts/security/pip-audit.exit-code
+          python scripts/security/summarize_dependency_audits.py \
+            --pip-report artifacts/security/pip-audit.json \
+            --pip-exit-code artifacts/security/pip-audit.exit-code
+
+      - name: Run npm dependency audit and preserve every finding
+        run: |
+          npm ci --prefix apps/web --ignore-scripts --no-fund
+          set +e
+          npm audit --prefix apps/web --audit-level=high --json \
+            > artifacts/security/npm-audit.json
+          audit_status=$?
+          set -e
+          printf '%s\n' "${audit_status}" > artifacts/security/npm-audit.exit-code
+          python scripts/security/summarize_dependency_audits.py \
+            --npm-report artifacts/security/npm-audit.json
+
+      - name: Remove expanded dependency trees before repository scan
+        run: |
+          rm -rf -- .audit-venv
+          rm -rf -- apps/web/node_modules
+
+      - name: Install pinned Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache: true
+
+      - name: Report all filesystem, configuration, and secret findings
+        run: >-
+          trivy fs
+          --scanners vuln,misconfig,secret,license
+          --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          --format json
+          --output artifacts/security/trivy-filesystem.json
+          --exit-code 0
+          --ignorefile .trivyignore.yaml
+          --secret-config trivy-secret.yaml
+          --skip-dirs artifacts
+          --timeout 15m
+          .
+
+      - name: Gate unignored High/Critical filesystem findings
+        run: >-
+          trivy fs
+          --scanners vuln,misconfig,secret
+          --severity HIGH,CRITICAL
+          --format table
+          --exit-code 1
+          --ignorefile .trivyignore.yaml
+          --secret-config trivy-secret.yaml
+          --skip-dirs artifacts
+          --timeout 15m
+          .
+
+      - name: Confirm Python audit execution and gate npm High/Critical findings
+        if: ${{ !cancelled() }}
+        run: |
+          pip_status="$(cat artifacts/security/pip-audit.exit-code)"
+          npm_status="$(cat artifacts/security/npm-audit.exit-code)"
+          case "$pip_status" in
+            0) ;;
+            1) echo "pip-audit findings are preserved; Trivy gates Python High/Critical." ;;
+            *) echo "pip-audit failed operationally with exit code $pip_status"; exit 1 ;;
+          esac
+          if [ "$npm_status" -ne 0 ]; then
+            echo "npm audit found High/Critical vulnerabilities or an audit error."
+          fi
+          test "$npm_status" -eq 0
+
+      - name: Upload dependency and filesystem reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-and-filesystem-security
+          path: artifacts/security
+          if-no-files-found: error
+          retention-days: 30
+
+  compose-images:
+    name: Container images and SBOM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pinned Syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          syft-version: ${{ env.SYFT_VERSION }}
+
+      - name: Generate source SPDX and CycloneDX SBOM before local secrets exist
+        run: >-
+          python scripts/security/generate_sbom.py
+          --syft "${{ steps.syft.outputs.cmd }}"
+          --output-dir "$RUNNER_TEMP/whaleguard-source-sbom"
+
+      - name: Stage clean source SBOMs outside the scanned source tree
+        run: |
+          mkdir -p artifacts/sbom
+          cp "$RUNNER_TEMP/whaleguard-source-sbom/"* artifacts/sbom/
+
+      - name: Generate ephemeral CI configuration and build images
+        run: |
+          python scripts/bootstrap_env.py
+          project_name="$(python scripts/migrate_redis_volume.py --print-project-name)"
+          printf 'WG_COMPOSE_PROJECT=%s\n' "$project_name" >> "$GITHUB_ENV"
+          docker compose --project-name "$project_name" \
+            --file docker-compose.yml --env-file .env config --quiet
+          docker compose --project-name "$project_name" \
+            --file docker-compose.yml --env-file .env build --pull
+
+      - name: Generate SPDX and CycloneDX SBOMs for all eight service images
+        run: >-
+          python scripts/security/generate_sbom.py
+          --syft "${{ steps.syft.outputs.cmd }}"
+          --output-dir artifacts/sbom
+          --skip-source
+          --compose-images
+          --project-name "$WG_COMPOSE_PROJECT"
+
+      - name: Install pinned Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache: true
+
+      - name: Report all image findings and gate unignored High/Critical findings
+        run: >-
+          python scripts/security/scan_compose_images.py
+          --output-dir artifacts/security
+          --ignore-file .trivyignore.yaml
+          --project-name "$WG_COMPOSE_PROJECT"
+
+      - name: Upload SBOM and image reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compose-image-sbom-and-security
+          path: |
+            artifacts/sbom
+            artifacts/security
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove ephemeral Compose state
+        if: always()
+        run: |
+          project_name="${WG_COMPOSE_PROJECT:-$(python scripts/migrate_redis_volume.py --print-project-name)}"
+          docker compose --project-name "$project_name" \
+            --file docker-compose.yml --env-file .env \
+            down --volumes --remove-orphans

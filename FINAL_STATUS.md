@@ -1,4 +1,7 @@
-# WhaleGuard AI RedLab 最终状态
+# WhaleGuard AI RedLab 历史验收状态（2026-08-30）
+
+> [!IMPORTANT]
+> 本文件保留 Docker 安装完成前的历史现场记录，不能代表当前版本。v0.1.0 后续已完成 8 服务健康、产品 smoke、真实 RQ callback 与两轮持久化验收；当前入口见 [README](README.md)，v0.1.1 是否可发布只以 [发布门禁](docs/RELEASE.md) 为准。
 
 更新时间：2026-08-30 06:12 +08:00（Asia/Shanghai）
 
@@ -99,9 +102,11 @@ Windows 首次安装（通过兼容门禁后）：
 Linux / WSL2：
 
 ```bash
-python3 scripts/bootstrap_env.py
-docker compose up --build
+make docker-up
 ```
+
+当前受控入口会在同一 Compose 项目名下先完成 v0.1.0 Redis 卷的幂等兼容迁移；
+不要把这条历史记录中的启动方式改回裸 `docker compose up`。
 
 等价 Make 命令：`make dev`、`make docker-up`、`make docker-down`、`make seed`、`make reset`、`make test`、`make lint`、`make format`、`make verify`。
 

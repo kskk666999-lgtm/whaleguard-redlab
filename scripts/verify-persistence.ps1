@@ -72,7 +72,23 @@ try {
         throw "Persistence checkpoint was not found at $CheckpointPath"
     }
     $checkpoint = Get-Content -Raw -LiteralPath $CheckpointPath | ConvertFrom-Json
-    Assert-WgValue ($checkpoint.schema_version -eq 1) "Unsupported persistence checkpoint schema."
+    Assert-WgValue ($checkpoint.schema_version -eq 2) "Unsupported persistence checkpoint schema; run the current smoke test again."
+    Assert-WgValue (-not [string]::IsNullOrWhiteSpace([string]$checkpoint.run_project_id)) "Persistence checkpoint has no TestRun project identity."
+    Assert-WgValue ($checkpoint.expected_evidence_count -gt 0 -and $checkpoint.expected_evidence_count -le 100) "Persistence checkpoint has an invalid Evidence count."
+    $expectedEvidenceEntries = @($checkpoint.evidence_entries)
+    Assert-WgValue ($expectedEvidenceEntries.Count -eq $checkpoint.expected_evidence_count) "Persistence checkpoint has an incomplete Evidence identity set."
+
+    $expectedEvidenceById = @{}
+    foreach ($expectedEvidence in $expectedEvidenceEntries) {
+        $expectedEvidenceId = [string]$expectedEvidence.id
+        Assert-WgValue (-not [string]::IsNullOrWhiteSpace($expectedEvidenceId)) "Persistence checkpoint contains Evidence without an identity."
+        Assert-WgValue (-not $expectedEvidenceById.ContainsKey($expectedEvidenceId)) "Persistence checkpoint contains a duplicate Evidence identity."
+        Assert-WgValue ([string]$expectedEvidence.project_id -eq [string]$checkpoint.run_project_id) "Persistence checkpoint contains an Evidence project mismatch."
+        Assert-WgValue ([string]$expectedEvidence.run_id -eq [string]$checkpoint.run_id) "Persistence checkpoint contains an Evidence TestRun mismatch."
+        Assert-WgValue (-not [string]::IsNullOrWhiteSpace([string]$expectedEvidence.evidence_type)) "Persistence checkpoint contains Evidence without a type."
+        Assert-WgValue ([string]$expectedEvidence.sha256 -cmatch "^[0-9a-f]{64}$") "Persistence checkpoint contains an invalid Evidence SHA-256 digest."
+        $expectedEvidenceById[$expectedEvidenceId] = $expectedEvidence
+    }
 
     $apiPort = ([Uri]($ApiBase -replace "/api/v1/?$", "")).Port
     $webPort = ([Uri]$WebBase).Port
@@ -94,9 +110,33 @@ try {
 
     $run = Invoke-WgApi -Method GET -Path "/runs/$($checkpoint.run_id)" -Headers $headers
     Assert-WgValue ([string]$run.id -eq [string]$checkpoint.run_id) "TestRun was not retained after $Phase."
+    Assert-WgValue ([string]$run.project_id -eq [string]$checkpoint.run_project_id) "TestRun project association changed after $Phase."
     Assert-WgValue ($run.status -eq "completed") "Persisted TestRun is no longer completed after $Phase."
     $results = Invoke-WgApi -Method GET -Path "/runs/$($checkpoint.run_id)/results?page_size=100" -Headers $headers
     Assert-WgValue ($results.total -eq $checkpoint.expected_result_count) "TestResult count changed after $Phase."
+
+    $persistedEvidence = Invoke-WgApi -Method GET -Path "/evidence?project_id=$($checkpoint.run_project_id)&run_id=$($checkpoint.run_id)&page_size=100" -Headers $headers
+    $persistedEvidenceItems = @($persistedEvidence.items)
+    Assert-WgValue ($persistedEvidence.total -eq $checkpoint.expected_evidence_count) "Evidence count changed after $Phase."
+    Assert-WgValue ($persistedEvidenceItems.Count -eq $checkpoint.expected_evidence_count) "Evidence page is incomplete after $Phase."
+    $persistedEvidenceById = @{}
+    foreach ($evidenceItem in $persistedEvidenceItems) {
+        $evidenceId = [string]$evidenceItem.id
+        Assert-WgValue (-not [string]::IsNullOrWhiteSpace($evidenceId)) "Persisted Evidence has no identity after $Phase."
+        Assert-WgValue (-not $persistedEvidenceById.ContainsKey($evidenceId)) "Persisted Evidence contains a duplicate identity after $Phase."
+        Assert-WgValue ($expectedEvidenceById.ContainsKey($evidenceId)) "Unexpected Evidence identity appeared after $Phase."
+        $persistedEvidenceById[$evidenceId] = $evidenceItem
+    }
+    foreach ($expectedEvidence in $expectedEvidenceEntries) {
+        $evidenceId = [string]$expectedEvidence.id
+        Assert-WgValue ($persistedEvidenceById.ContainsKey($evidenceId)) "Expected Evidence identity was not retained after $Phase."
+        $evidenceItem = $persistedEvidenceById[$evidenceId]
+        Assert-WgValue ([string]$evidenceItem.project_id -eq [string]$expectedEvidence.project_id) "Evidence project association changed after $Phase."
+        Assert-WgValue ([string]$evidenceItem.run_id -eq [string]$expectedEvidence.run_id) "Evidence TestRun association changed after $Phase."
+        Assert-WgValue ([string]$evidenceItem.finding_id -eq [string]$expectedEvidence.finding_id) "Evidence Finding association changed after $Phase."
+        Assert-WgValue ([string]$evidenceItem.evidence_type -ceq [string]$expectedEvidence.evidence_type) "Evidence type changed after $Phase."
+        Assert-WgValue ([string]$evidenceItem.sha256 -ceq [string]$expectedEvidence.sha256) "Evidence SHA-256 digest changed after $Phase."
+    }
 
     $finding = Invoke-WgApi -Method GET -Path "/findings/$($checkpoint.finding_id)" -Headers $headers
     Assert-WgValue ([string]$finding.run_id -eq [string]$checkpoint.run_id) "Finding was not retained after $Phase."

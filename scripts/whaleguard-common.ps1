@@ -1154,6 +1154,546 @@ function Get-WgComposeBaseArguments {
     )
 }
 
+function Get-WgObjectPropertyValue {
+    param(
+        [AllowNull()][object]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $InputObject) { return $null }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+function Test-WgEmptyJsonObject {
+    param([AllowNull()][AllowEmptyCollection()][object]$Value)
+
+    if ($null -eq $Value) { return $true }
+    if ($Value -isnot [PSCustomObject]) { return $false }
+    return @($Value.PSObject.Properties).Count -eq 0
+}
+
+function Test-WgEmptyCollection {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) { return $true }
+    return @($Value).Count -eq 0
+}
+
+function Test-WgExactStringList {
+    param(
+        [AllowNull()][object[]]$Actual,
+        [AllowNull()][object[]]$Expected
+    )
+
+    $actualValues = @($Actual | ForEach-Object { [string]$_ })
+    $expectedValues = @($Expected | ForEach-Object { [string]$_ })
+    if ($actualValues.Count -ne $expectedValues.Count) { return $false }
+    for ($index = 0; $index -lt $actualValues.Count; $index += 1) {
+        if ($actualValues[$index] -cne $expectedValues[$index]) { return $false }
+    }
+    return $true
+}
+
+function Test-WgExactCapabilitySet {
+    param(
+        [AllowNull()][object[]]$Actual,
+        [AllowNull()][string[]]$Expected
+    )
+
+    $actualValues = @($Actual | ForEach-Object {
+        $value = ([string]$_).ToUpperInvariant()
+        if ($value.StartsWith("CAP_", [StringComparison]::Ordinal)) {
+            $value = $value.Substring(4)
+        }
+        $value
+    } | Sort-Object)
+    $expectedValues = @($Expected | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object)
+    return Test-WgExactStringList -Actual $actualValues -Expected $expectedValues
+}
+
+function ConvertFrom-WgDockerJsonOutput {
+    param(
+        [Parameter(Mandatory = $true)][object]$Result,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if ([int]$Result.ExitCode -ne 0) {
+        throw "$Context failed; refusing to continue the Redis volume migration."
+    }
+    $text = (@($Result.Output) -join "`n").Trim()
+    if (-not $text) {
+        throw "$Context returned no JSON; refusing to continue the Redis volume migration."
+    }
+    try { return ($text | ConvertFrom-Json -ErrorAction Stop) }
+    catch { throw "$Context returned invalid JSON; refusing to continue the Redis volume migration." }
+}
+
+function Invoke-WgDockerCaptureRequired {
+    param(
+        [Parameter(Mandatory = $true)][string]$Docker,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $result = Invoke-WgExternalCommandCapture -FilePath $Docker -Arguments $Arguments
+    if ($result.ExitCode -ne 0) {
+        throw "$Context failed; refusing to continue the Redis volume migration."
+    }
+    return $result
+}
+
+function Assert-WgRedisVolumeInspection {
+    param(
+        [Parameter(Mandatory = $true)][object]$Inspection,
+        [Parameter(Mandatory = $true)][string]$ExpectedName,
+        [Parameter(Mandatory = $true)][string]$ExpectedProject
+    )
+
+    $labels = Get-WgObjectPropertyValue -InputObject $Inspection -Name "Labels"
+    $options = $null
+    $optionsProperty = $Inspection.PSObject.Properties["Options"]
+    if ($null -ne $optionsProperty) { $options = $optionsProperty.Value }
+    $projectLabel = Get-WgObjectPropertyValue -InputObject $labels -Name "com.docker.compose.project"
+    $volumeLabel = Get-WgObjectPropertyValue -InputObject $labels -Name "com.docker.compose.volume"
+    if (
+        (Get-WgObjectPropertyValue -InputObject $Inspection -Name "Name") -cne $ExpectedName -or
+        (Get-WgObjectPropertyValue -InputObject $Inspection -Name "Driver") -cne "local" -or
+        (Get-WgObjectPropertyValue -InputObject $Inspection -Name "Scope") -cne "local" -or
+        -not (Test-WgEmptyJsonObject -Value $options) -or
+        $projectLabel -cne $ExpectedProject -or
+        $volumeLabel -cne "redis_data"
+    ) {
+        throw "Refusing to modify a Redis volume outside this exact local Compose project."
+    }
+}
+
+function Assert-WgRedisAttachedContainers {
+    param(
+        [Parameter(Mandatory = $true)][string]$Docker,
+        [Parameter(Mandatory = $true)][string[]]$DockerBaseArguments,
+        [Parameter(Mandatory = $true)][string]$VolumeName,
+        [Parameter(Mandatory = $true)][string]$ProjectName,
+        [switch]$RequireStopped
+    )
+
+    $result = Invoke-WgDockerCaptureRequired `
+        -Docker $Docker `
+        -Arguments ($DockerBaseArguments + @(
+            "ps", "-aq", "--no-trunc", "--filter", "volume=$VolumeName"
+        )) `
+        -Context "Redis attached-container listing"
+    foreach ($rawContainerId in @($result.Output)) {
+        $containerId = ([string]$rawContainerId).Trim()
+        if (-not $containerId) { continue }
+        if ($containerId -notmatch "^[0-9a-f]{64}$") {
+            throw "Redis attached-container listing returned an invalid full container ID."
+        }
+        $inspectionResult = Invoke-WgDockerCaptureRequired `
+            -Docker $Docker `
+            -Arguments ($DockerBaseArguments + @("container", "inspect", $containerId)) `
+            -Context "Redis attached-container inspection"
+        $inspectionItems = @(
+            ConvertFrom-WgDockerJsonOutput `
+                -Result $inspectionResult `
+                -Context "Redis attached-container inspection"
+        )
+        if ($inspectionItems.Count -ne 1) {
+            throw "Redis attached-container inspection was not unique."
+        }
+        $inspection = $inspectionItems[0]
+        if ((Get-WgObjectPropertyValue -InputObject $inspection -Name "Id") -cne $containerId) {
+            throw "Redis attached-container inspection returned the wrong container."
+        }
+        $config = Get-WgObjectPropertyValue -InputObject $inspection -Name "Config"
+        $labels = Get-WgObjectPropertyValue -InputObject $config -Name "Labels"
+        if (
+            (Get-WgObjectPropertyValue -InputObject $labels -Name "com.docker.compose.project") -cne $ProjectName -or
+            (Get-WgObjectPropertyValue -InputObject $labels -Name "com.docker.compose.service") -cne "redis"
+        ) {
+            throw "The Redis volume is attached outside this exact Compose project."
+        }
+        if ($RequireStopped) {
+            $state = Get-WgObjectPropertyValue -InputObject $inspection -Name "State"
+            $running = [bool](Get-WgObjectPropertyValue -InputObject $state -Name "Running")
+            $paused = [bool](Get-WgObjectPropertyValue -InputObject $state -Name "Paused")
+            if ($running -or $paused) {
+                throw "Redis is still active after the required safe stop."
+            }
+        }
+    }
+}
+
+function Assert-WgRedisMigrationHelperInspection {
+    param(
+        [Parameter(Mandatory = $true)][object]$Inspection,
+        [Parameter(Mandatory = $true)][string]$ContainerId,
+        [Parameter(Mandatory = $true)][string]$ContainerName,
+        [Parameter(Mandatory = $true)][string]$VolumeName,
+        [Parameter(Mandatory = $true)][string]$ProjectName,
+        [Parameter(Mandatory = $true)][ValidateSet("inspection", "mutation", "postcheck")][string]$Role,
+        [Parameter(Mandatory = $true)][string]$User,
+        [AllowEmptyCollection()][string[]]$Capabilities = @(),
+        [Parameter(Mandatory = $true)][bool]$ReadOnlyVolume,
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][string]$Image
+    )
+
+    $config = Get-WgObjectPropertyValue -InputObject $Inspection -Name "Config"
+    $labels = Get-WgObjectPropertyValue -InputObject $config -Name "Labels"
+    $hostConfig = Get-WgObjectPropertyValue -InputObject $Inspection -Name "HostConfig"
+    $mounts = @(Get-WgObjectPropertyValue -InputObject $Inspection -Name "Mounts")
+    $expectedBind = "$VolumeName`:/data" + $(if ($ReadOnlyVolume) { ":ro" } else { "" })
+    $expectedReadWrite = -not $ReadOnlyVolume
+    $entrypoint = @(Get-WgObjectPropertyValue -InputObject $config -Name "Entrypoint")
+    $configuredCommand = @(Get-WgObjectPropertyValue -InputObject $config -Name "Cmd")
+    $restartPolicy = Get-WgObjectPropertyValue -InputObject $hostConfig -Name "RestartPolicy"
+    $restartName = Get-WgObjectPropertyValue -InputObject $restartPolicy -Name "Name"
+    $ipcMode = [string](Get-WgObjectPropertyValue -InputObject $hostConfig -Name "IpcMode")
+    $cgroupMode = [string](Get-WgObjectPropertyValue -InputObject $hostConfig -Name "CgroupnsMode")
+    if (
+        (Get-WgObjectPropertyValue -InputObject $Inspection -Name "Id") -cne $ContainerId -or
+        (Get-WgObjectPropertyValue -InputObject $Inspection -Name "Name") -cne "/$ContainerName" -or
+        (Get-WgObjectPropertyValue -InputObject $config -Name "Image") -cne $Image -or
+        (Get-WgObjectPropertyValue -InputObject $config -Name "User") -cne $User -or
+        -not (Test-WgExactStringList -Actual $entrypoint -Expected @("sh")) -or
+        -not (Test-WgExactStringList -Actual $configuredCommand -Expected @("-ec", $Command)) -or
+        (Get-WgObjectPropertyValue -InputObject $labels -Name "com.whaleguard.redis-volume-migration") -cne "true" -or
+        (Get-WgObjectPropertyValue -InputObject $labels -Name "com.whaleguard.parent-compose-project") -cne $ProjectName -or
+        (Get-WgObjectPropertyValue -InputObject $labels -Name "com.whaleguard.redis-volume-migration-role") -cne $Role -or
+        -not (Test-WgExactCapabilitySet `
+            -Actual @(Get-WgObjectPropertyValue -InputObject $hostConfig -Name "CapAdd") `
+            -Expected $Capabilities) -or
+        -not (Test-WgExactCapabilitySet `
+            -Actual @(Get-WgObjectPropertyValue -InputObject $hostConfig -Name "CapDrop") `
+            -Expected @("ALL")) -or
+        (Get-WgObjectPropertyValue -InputObject $hostConfig -Name "NetworkMode") -cne "none" -or
+        -not [bool](Get-WgObjectPropertyValue -InputObject $hostConfig -Name "ReadonlyRootfs") -or
+        -not (Test-WgExactStringList `
+            -Actual @(Get-WgObjectPropertyValue -InputObject $hostConfig -Name "SecurityOpt") `
+            -Expected @("no-new-privileges:true")) -or
+        [bool](Get-WgObjectPropertyValue -InputObject $hostConfig -Name "Privileged") -or
+        [bool](Get-WgObjectPropertyValue -InputObject $hostConfig -Name "PublishAllPorts") -or
+        -not (Test-WgEmptyJsonObject `
+            -Value (Get-WgObjectPropertyValue -InputObject $hostConfig -Name "PortBindings")) -or
+        -not (Test-WgEmptyCollection `
+            -Value (Get-WgObjectPropertyValue -InputObject $hostConfig -Name "Devices")) -or
+        -not (Test-WgEmptyCollection `
+            -Value (Get-WgObjectPropertyValue -InputObject $hostConfig -Name "DeviceRequests")) -or
+        [string](Get-WgObjectPropertyValue -InputObject $hostConfig -Name "PidMode") -notin @("", "private") -or
+        $ipcMode -notin @("", "private") -or
+        $cgroupMode -notin @("", "private") -or
+        [string](Get-WgObjectPropertyValue -InputObject $hostConfig -Name "UTSMode") -ne "" -or
+        [string](Get-WgObjectPropertyValue -InputObject $hostConfig -Name "UsernsMode") -ne "" -or
+        $restartName -notin @($null, "", "no") -or
+        -not (Test-WgExactStringList `
+            -Actual @(Get-WgObjectPropertyValue -InputObject $hostConfig -Name "Binds") `
+            -Expected @($expectedBind)) -or
+        $mounts.Count -ne 1 -or
+        (Get-WgObjectPropertyValue -InputObject $mounts[0] -Name "Type") -cne "volume" -or
+        (Get-WgObjectPropertyValue -InputObject $mounts[0] -Name "Name") -cne $VolumeName -or
+        (Get-WgObjectPropertyValue -InputObject $mounts[0] -Name "Driver") -cne "local" -or
+        (Get-WgObjectPropertyValue -InputObject $mounts[0] -Name "Destination") -cne "/data" -or
+        [bool](Get-WgObjectPropertyValue -InputObject $mounts[0] -Name "RW") -ne $expectedReadWrite
+    ) {
+        throw "Redis migration helper sandbox is not exact."
+    }
+}
+
+function Invoke-WgRedisScopedMigrationHelper {
+    param(
+        [Parameter(Mandatory = $true)][string]$Docker,
+        [Parameter(Mandatory = $true)][string[]]$DockerBaseArguments,
+        [Parameter(Mandatory = $true)][string]$VolumeName,
+        [Parameter(Mandatory = $true)][string]$ProjectName,
+        [Parameter(Mandatory = $true)][ValidateSet("inspection", "mutation", "postcheck")][string]$Role,
+        [Parameter(Mandatory = $true)][string]$User,
+        [AllowEmptyCollection()][string[]]$Capabilities = @(),
+        [Parameter(Mandatory = $true)][bool]$ReadOnlyVolume,
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][string]$Image
+    )
+
+    $containerName = "wg-redis-migrate-$Role-$([Guid]::NewGuid().ToString('N'))"
+    $mount = "$VolumeName`:/data" + $(if ($ReadOnlyVolume) { ":ro" } else { "" })
+    $arguments = $DockerBaseArguments + @(
+        "create",
+        "--name", $containerName,
+        "--label", "com.whaleguard.redis-volume-migration=true",
+        "--label", "com.whaleguard.parent-compose-project=$ProjectName",
+        "--label", "com.whaleguard.redis-volume-migration-role=$Role",
+        "--network", "none",
+        "--read-only",
+        "--cap-drop", "ALL"
+    )
+    foreach ($capability in $Capabilities) {
+        $arguments += @("--cap-add", $capability)
+    }
+    $arguments += @(
+        "--security-opt", "no-new-privileges:true",
+        "--user", $User,
+        "--entrypoint", "sh",
+        "-v", $mount,
+        $Image,
+        "-ec", $Command
+    )
+    $createResult = Invoke-WgDockerCaptureRequired `
+        -Docker $Docker `
+        -Arguments $arguments `
+        -Context "Redis $Role helper creation"
+    $ids = @($createResult.Output | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    if ($ids.Count -ne 1 -or $ids[0] -notmatch "^[0-9a-f]{64}$") {
+        throw "Docker did not create one uniquely identifiable Redis migration helper."
+    }
+    $containerId = $ids[0]
+    $primaryFailure = $null
+    $output = ""
+    try {
+        $inspectionResult = Invoke-WgDockerCaptureRequired `
+            -Docker $Docker `
+            -Arguments ($DockerBaseArguments + @("container", "inspect", $containerId)) `
+            -Context "Redis $Role helper inspection"
+        $inspectionItems = @(
+            ConvertFrom-WgDockerJsonOutput `
+                -Result $inspectionResult `
+                -Context "Redis $Role helper inspection"
+        )
+        if ($inspectionItems.Count -ne 1) {
+            throw "Redis migration helper inspection was not unique."
+        }
+        Assert-WgRedisMigrationHelperInspection `
+            -Inspection $inspectionItems[0] `
+            -ContainerId $containerId `
+            -ContainerName $containerName `
+            -VolumeName $VolumeName `
+            -ProjectName $ProjectName `
+            -Role $Role `
+            -User $User `
+            -Capabilities $Capabilities `
+            -ReadOnlyVolume $ReadOnlyVolume `
+            -Command $Command `
+            -Image $Image
+        $startResult = Invoke-WgDockerCaptureRequired `
+            -Docker $Docker `
+            -Arguments ($DockerBaseArguments + @("start", "--attach", $containerId)) `
+            -Context "Redis $Role helper execution"
+        $output = (@($startResult.Output) -join "`n").Trim()
+    }
+    catch { $primaryFailure = $_ }
+    $removeResult = Invoke-WgExternalCommandCapture `
+        -FilePath $Docker `
+        -Arguments ($DockerBaseArguments + @("container", "rm", "--force", $containerId))
+    if ($removeResult.ExitCode -ne 0) {
+        throw "Docker could not remove the exact scoped Redis migration helper."
+    }
+    if ($null -ne $primaryFailure) { throw $primaryFailure }
+    return $output
+}
+
+function Invoke-WgRedisVolumeMigration {
+    param(
+        [Parameter(Mandatory = $true)][string]$Docker,
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [Parameter(Mandatory = $true)][string]$DockerConfig,
+        [Parameter(Mandatory = $true)][string]$ProjectName
+    )
+
+    $root = [IO.Path]::GetFullPath((Get-WgRoot))
+    $dockerPath = [IO.Path]::GetFullPath($Docker)
+    $configPath = [IO.Path]::GetFullPath($DockerConfig)
+    $expectedConfig = [IO.Path]::GetFullPath((Join-Path $root ".local\docker-cli-config"))
+    $trustedDockerPath = [IO.Path]::GetFullPath((Get-WgDocker))
+    $trustedTarget = Get-WgLocalDockerTarget -Docker $trustedDockerPath
+    $trustedPlugin = Get-WgTrustedDockerPluginConfig
+    $trustedConfig = [IO.Path]::GetFullPath($trustedPlugin.ConfigDirectory)
+    if (
+        -not (Test-Path -LiteralPath $dockerPath -PathType Leaf) -or
+        -not [string]::Equals(
+            $dockerPath, $trustedDockerPath, [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not (Test-WgLocalDockerEndpoint -Endpoint $Endpoint) -or
+        $Endpoint -cne $trustedTarget.Endpoint -or
+        -not (Test-Path -LiteralPath $configPath -PathType Container) -or
+        -not [string]::Equals($configPath, $expectedConfig, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($configPath, $trustedConfig, [StringComparison]::OrdinalIgnoreCase) -or
+        $ProjectName -cne (Get-WgComposeProjectName)
+    ) {
+        throw "Redis volume migration requires the trusted local Docker path, config, endpoint, and project."
+    }
+    Assert-WgNoReparsePointInPath -Path $dockerPath
+    Assert-WgNoReparsePointInPath -Path $configPath
+    $composePath = Join-Path $root "docker-compose.yml"
+    $environmentPath = Join-Path $root ".env"
+    Assert-WgNoReparsePointInPath -Path $composePath
+    Assert-WgNoReparsePointInPath -Path $environmentPath
+    Assert-WgSafeComposeEnvironmentFile -Path $environmentPath
+    Assert-WgComposeOwnership -Docker $dockerPath -Endpoint $Endpoint
+
+    $dockerBase = @("--config", $configPath, "--host", $Endpoint)
+    $composeBase = @(
+        "compose",
+        "--project-name", $ProjectName,
+        "--file", $composePath,
+        "--env-file", $environmentPath
+    )
+    $configResult = Invoke-WgDockerCaptureRequired `
+        -Docker $dockerPath `
+        -Arguments ($dockerBase + $composeBase + @("config", "--format", "json")) `
+        -Context "Redis Compose identity inspection"
+    $composeConfig = ConvertFrom-WgDockerJsonOutput `
+        -Result $configResult `
+        -Context "Redis Compose identity inspection"
+    $volumes = Get-WgObjectPropertyValue -InputObject $composeConfig -Name "volumes"
+    $redisVolume = Get-WgObjectPropertyValue -InputObject $volumes -Name "redis_data"
+    $volumeName = [string](Get-WgObjectPropertyValue -InputObject $redisVolume -Name "name")
+    $expectedVolumeName = "${ProjectName}_redis_data"
+    if (
+        (Get-WgObjectPropertyValue -InputObject $composeConfig -Name "name") -cne $ProjectName -or
+        $volumeName -cne $expectedVolumeName
+    ) {
+        throw "Compose did not expose the exact Redis volume for this project."
+    }
+
+    $volumeResult = Invoke-WgExternalCommandCapture `
+        -FilePath $dockerPath `
+        -Arguments ($dockerBase + @("volume", "inspect", $volumeName))
+    if ($volumeResult.ExitCode -ne 0) {
+        $listResult = Invoke-WgDockerCaptureRequired `
+            -Docker $dockerPath `
+            -Arguments ($dockerBase + @(
+                "volume", "ls", "--quiet", "--filter", "name=^$volumeName$"
+            )) `
+            -Context "Redis volume fallback listing"
+        $listed = @($listResult.Output | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+        if ($listed.Count -ne 0) {
+            throw "Docker returned an inconsistent Redis volume listing after inspect failed."
+        }
+        return [PSCustomObject]@{
+            Status = "not_needed"
+            VolumePresent = $false
+            Project = $ProjectName
+        }
+    }
+    $volumeItems = @(
+        ConvertFrom-WgDockerJsonOutput `
+            -Result $volumeResult `
+            -Context "Redis volume inspection"
+    )
+    if ($volumeItems.Count -ne 1) { throw "Redis volume inspection was not unique." }
+    Assert-WgRedisVolumeInspection `
+        -Inspection $volumeItems[0] `
+        -ExpectedName $volumeName `
+        -ExpectedProject $ProjectName
+    Assert-WgRedisAttachedContainers `
+        -Docker $dockerPath `
+        -DockerBaseArguments $dockerBase `
+        -VolumeName $volumeName `
+        -ProjectName $ProjectName
+
+    $null = Invoke-WgDockerCaptureRequired `
+        -Docker $dockerPath `
+        -Arguments ($dockerBase + $composeBase + @("stop", "redis")) `
+        -Context "Redis safe stop"
+    Assert-WgRedisAttachedContainers `
+        -Docker $dockerPath `
+        -DockerBaseArguments $dockerBase `
+        -VolumeName $volumeName `
+        -ProjectName $ProjectName `
+        -RequireStopped
+
+    $migrationImage = (
+        "redis:7.4.11-alpine3.21@" +
+        "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf"
+    )
+    $countCommand = @'
+set -o pipefail; cap_eff="$(awk '$1 == "CapEff:" { print $2 }' /proc/1/status)"; cap_prm="$(awk '$1 == "CapPrm:" { print $2 }' /proc/1/status)"; cap_bnd="$(awk '$1 == "CapBnd:" { print $2 }' /proc/1/status)"; nnp="$(awk '$1 == "NoNewPrivs:" { print $2 }' /proc/1/status)"; [ "$(id -u)" = 0 ] && [ "$cap_eff" = 0000000000000004 ] && [ "$cap_prm" = 0000000000000004 ] && [ "$cap_bnd" = 0000000000000004 ] && [ "$nnp" = 1 ] || exit 73; count="$(find /data -xdev -user 0 -exec echo x \; | wc -l)" || exit 71; printf "%s %s %s %s\n" "$count" "$cap_eff" "$cap_prm" "$cap_bnd"
+'@.Trim()
+    $before = Invoke-WgRedisScopedMigrationHelper `
+        -Docker $dockerPath `
+        -DockerBaseArguments $dockerBase `
+        -VolumeName $volumeName `
+        -ProjectName $ProjectName `
+        -Role "inspection" `
+        -User "0:0" `
+        -Capabilities @("DAC_READ_SEARCH") `
+        -ReadOnlyVolume $true `
+        -Command $countCommand `
+        -Image $migrationImage
+    $beforeFields = @($before -split "\s+" | Where-Object { $_ })
+    $rootOwnedBefore = [long]0
+    if (
+        $beforeFields.Count -ne 4 -or
+        -not [long]::TryParse($beforeFields[0], [ref]$rootOwnedBefore) -or
+        $rootOwnedBefore -lt 0 -or
+        -not (Test-WgExactStringList `
+            -Actual $beforeFields[1..3] `
+            -Expected @(
+                "0000000000000004", "0000000000000004", "0000000000000004"
+            ))
+    ) {
+        throw "Could not prove legacy Redis ownership with the scoped inspection helper."
+    }
+
+    $mutationCapability = $null
+    if ($rootOwnedBefore -gt 0) {
+        $mutationCommand = @'
+cap_eff="$(awk '$1 == "CapEff:" { print $2 }' /proc/1/status)"; cap_prm="$(awk '$1 == "CapPrm:" { print $2 }' /proc/1/status)"; cap_bnd="$(awk '$1 == "CapBnd:" { print $2 }' /proc/1/status)"; nnp="$(awk '$1 == "NoNewPrivs:" { print $2 }' /proc/1/status)"; [ "$(id -u)" = 0 ] && [ "$cap_eff" = 0000000000000005 ] && [ "$cap_prm" = 0000000000000005 ] && [ "$cap_bnd" = 0000000000000005 ] && [ "$nnp" = 1 ] || exit 73; find /data -xdev -depth -user 0 -exec chown -h redis:redis {} +; printf "%s %s %s\n" "$cap_eff" "$cap_prm" "$cap_bnd"
+'@.Trim()
+        $mutationOutput = Invoke-WgRedisScopedMigrationHelper `
+            -Docker $dockerPath `
+            -DockerBaseArguments $dockerBase `
+            -VolumeName $volumeName `
+            -ProjectName $ProjectName `
+            -Role "mutation" `
+            -User "0:0" `
+            -Capabilities @("CHOWN", "DAC_READ_SEARCH") `
+            -ReadOnlyVolume $false `
+            -Command $mutationCommand `
+            -Image $migrationImage
+        $mutationFields = @($mutationOutput -split "\s+" | Where-Object { $_ })
+        if (-not (Test-WgExactStringList `
+            -Actual $mutationFields `
+            -Expected @(
+                "0000000000000005", "0000000000000005", "0000000000000005"
+            ))) {
+            throw "Redis migration helper capability proof is invalid."
+        }
+        $mutationCapability = $mutationFields[0]
+    }
+
+    $postcheckCommand = @'
+set -o pipefail; cap_eff="$(awk '$1 == "CapEff:" { print $2 }' /proc/1/status)"; cap_prm="$(awk '$1 == "CapPrm:" { print $2 }' /proc/1/status)"; cap_bnd="$(awk '$1 == "CapBnd:" { print $2 }' /proc/1/status)"; nnp="$(awk '$1 == "NoNewPrivs:" { print $2 }' /proc/1/status)"; [ "$(id -u)" != 0 ] && [ "$cap_eff" = 0000000000000000 ] && [ "$cap_prm" = 0000000000000000 ] && [ "$cap_bnd" = 0000000000000000 ] && [ "$nnp" = 1 ] || exit 73; count="$(find /data -xdev -user 0 -exec echo x \; | wc -l)" || exit 71; [ "$count" = 0 ] || exit 72; printf "%s %s %s %s\n" "$count" "$cap_eff" "$cap_prm" "$cap_bnd"
+'@.Trim()
+    $after = Invoke-WgRedisScopedMigrationHelper `
+        -Docker $dockerPath `
+        -DockerBaseArguments $dockerBase `
+        -VolumeName $volumeName `
+        -ProjectName $ProjectName `
+        -Role "postcheck" `
+        -User "redis" `
+        -Capabilities @() `
+        -ReadOnlyVolume $true `
+        -Command $postcheckCommand `
+        -Image $migrationImage
+    $afterFields = @($after -split "\s+" | Where-Object { $_ })
+    if (-not (Test-WgExactStringList `
+        -Actual $afterFields `
+        -Expected @(
+            "0", "0000000000000000", "0000000000000000", "0000000000000000"
+        ))) {
+        throw "Root-owned entries remain in the Redis volume."
+    }
+    return [PSCustomObject]@{
+        Status = $(if ($rootOwnedBefore -gt 0) { "migrated" } else { "already_compatible" })
+        VolumePresent = $true
+        RootOwnedEntriesBefore = $rootOwnedBefore
+        RootOwnedEntriesAfter = 0
+        MutationHelperCapEff = $mutationCapability
+        Project = $ProjectName
+    }
+}
+
 function Assert-WgComposeOwnership {
     param(
         [Parameter(Mandatory = $true)][string]$Docker,

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from redis import Redis
 from rq import Worker
+from rq.scheduler import RQScheduler
 from rq.serializers import JSONSerializer
 
 _RUNNING_STATES = frozenset({"started", "idle", "busy"})
@@ -42,7 +43,27 @@ def worker_is_healthy(connection: Redis, worker_name: str, queue_name: str) -> b
         return False
     if worker.last_heartbeat is None or connection.ttl(worker.key) <= 0:
         return False
-    return queue_name in worker.queue_names()
+    return queue_name in worker.queue_names() and scheduler_is_healthy(connection, queue_name)
+
+
+def scheduler_is_healthy(connection: Redis, queue_name: str) -> bool:
+    """Require a live scheduler heartbeat for the configured queue leader."""
+
+    lock_key = RQScheduler.get_locking_key(queue_name)
+    owner = connection.get(lock_key)
+    if isinstance(owner, bytes):
+        try:
+            owner = owner.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+    if not isinstance(owner, str) or not 1 <= len(owner) <= 128:
+        return False
+    scheduler_key = f"rq:scheduler:{owner}"
+    return bool(
+        connection.ttl(lock_key) > 0
+        and connection.ttl(scheduler_key) > 0
+        and connection.hget(scheduler_key, "last_heartbeat")
+    )
 
 
 def main() -> int:

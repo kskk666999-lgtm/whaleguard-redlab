@@ -18,9 +18,10 @@ sed -i "s/^WHALEGUARD_APP_GID=.*/WHALEGUARD_APP_GID=$(id -g)/" .env
 不要以 root（UID 0）构建此映射；请改用普通用户。然后启动：
 
 ```bash
-docker compose config --quiet
-docker compose up -d --build
-docker compose ps
+make compose-check
+make docker-up
+WG_PROJECT="$(python3 scripts/migrate_redis_volume.py --print-project-name)"
+docker compose --project-name "$WG_PROJECT" --file docker-compose.yml --env-file .env ps
 curl --fail http://127.0.0.1:8000/health
 ```
 

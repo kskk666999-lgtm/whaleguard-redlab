@@ -1,0 +1,20 @@
+# WhaleGuard exceptions are deny-by-default and narrowly scoped.
+#
+# An exception is allowed only for a validated false positive or a documented,
+# temporarily accepted risk. Every added entry must be scoped with paths or
+# purls and include both a concrete statement and an expired_at review date.
+# Broad or permanent ignores are not accepted by the workflow policy.
+vulnerabilities: []
+misconfigurations:
+  - id: DS-0031
+    paths:
+      - "apps/api/Dockerfile"
+    statement: >-
+      Owner: WhaleGuard maintainers. Impact: only DS-0031 for apps/api/Dockerfile
+      is suppressed; credential-bearing ENV findings elsewhere remain blocking.
+      Reason: WHALEGUARD_CREDENTIALS_FILE contains only the in-container destination
+      path; the random credential value is created at runtime and is never set in
+      the image ENV. Expiry: 2027-02-28.
+    expired_at: 2027-02-28
+secrets: []
+licenses: []

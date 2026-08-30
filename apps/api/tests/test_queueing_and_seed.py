@@ -6,6 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+from pydantic import ValidationError
+from rq import Retry
 from rq.serializers import JSONSerializer
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -45,8 +48,11 @@ def test_rq_uses_json_serializer(monkeypatch) -> None:
             worker_callback_base="http://api:8000",
         ),
     )
+    run_id = uuid4()
+    delivery_id = uuid4()
     job_id = queueing.enqueue_rule_evaluation(
-        uuid4(),
+        run_id,
+        delivery_id,
         {"id": "safe-case", "evaluator": {"type": "rules"}},
         "safe output",
         [],
@@ -56,6 +62,53 @@ def test_rq_uses_json_serializer(monkeypatch) -> None:
     assert captured["serializer"] is JSONSerializer
     assert captured["function_name"] == "whaleguard_worker.jobs.evaluate_test_job"
     assert captured["payload"]["callback"]["api_base"] == "http://api:8000"
+    assert captured["payload"]["callback"]["delivery_id"] == str(delivery_id)
+    assert captured["payload"]["delivery_id"] == str(delivery_id)
+    assert isinstance(captured["kwargs"]["retry"], Retry)
+    assert captured["kwargs"]["retry"].max == 5
+    assert captured["kwargs"]["retry"].intervals == [1, 2, 5, 10, 30]
+
+
+def test_queue_enabled_requires_nonempty_worker_token() -> None:
+    with pytest.raises(ValidationError, match="WG_WORKER_TOKEN is required"):
+        Settings(
+            _env_file=None,
+            task_queue_enabled=True,
+            WG_WORKER_TOKEN="   ",
+        )
+
+
+def test_rq_refuses_enqueue_without_callback_token(monkeypatch) -> None:
+    redis_was_contacted = False
+
+    class UnexpectedRedis:
+        @classmethod
+        def from_url(cls, *_args, **_kwargs):
+            nonlocal redis_was_contacted
+            redis_was_contacted = True
+            raise AssertionError("Redis must not be contacted without a callback token")
+
+    monkeypatch.setattr(queueing, "Redis", UnexpectedRedis)
+    monkeypatch.setattr(
+        queueing,
+        "get_settings",
+        lambda: SimpleNamespace(
+            task_queue_enabled=True,
+            worker_token="",
+        ),
+    )
+
+    job_id = queueing.enqueue_rule_evaluation(
+        uuid4(),
+        uuid4(),
+        {"id": "safe-case", "evaluator": {"type": "rules"}},
+        "safe output",
+        [],
+        1,
+    )
+
+    assert job_id is None
+    assert redis_was_contacted is False
 
 
 def test_first_run_credentials_are_atomic_and_not_overwritten() -> None:

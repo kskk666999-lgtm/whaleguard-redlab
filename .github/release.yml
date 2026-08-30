@@ -1,0 +1,28 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: "Security / 安全"
+      labels:
+        - security
+    - title: "Reliability / 可靠性"
+      labels:
+        - reliability
+        - backend
+        - worker
+        - database
+    - title: "CI & Supply Chain / 持续集成与供应链"
+      labels:
+        - ci
+        - dependencies
+        - supply-chain
+    - title: "Frontend / 前端"
+      labels:
+        - frontend
+    - title: "Documentation / 文档"
+      labels:
+        - documentation
+    - title: "Other changes / 其他变化"
+      labels:
+        - "*"

@@ -23,7 +23,7 @@ export default function FindingsPage() {
   const { toast } = useApp();
   const client = useQueryClient();
   const [selected, setSelected] = useState<Finding | null>(null);
-  const query = useQuery({ queryKey: ["findings"], queryFn: () => fetchPage<Finding>("/findings?page=1&page_size=200") });
+  const query = useQuery({ queryKey: ["findings"], queryFn: () => fetchPage<Finding>("/findings?page=1&page_size=100") });
   const update = useMutation({ mutationFn: ({ id, status }: { id: string; status: string }) => apiRequest<Finding>(`/findings/${id}`, { method: "PATCH", body: { status } }), onSuccess: (result) => { client.invalidateQueries({ queryKey: ["findings"] }); setSelected((current) => current?.id === result.id ? result : current); toast({ title: "Finding 状态已更新", description: `当前状态：${result.status}`, tone: "success" }); }, onError: (error) => toast({ title: "更新失败", description: error.message, tone: "error" }) });
   const items = query.data?.items || [];
   const columns: Column<Finding>[] = [

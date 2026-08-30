@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -19,6 +20,7 @@ from .middleware import (
     RequestSizeLimitMiddleware,
     RequestTooLarge,
 )
+from .outbox import dispatch_pending_outbox
 from .routers import admin, auth, findings, projects, targets, testing
 from .schemas import HealthResponse
 from .seed import seed_database
@@ -31,6 +33,18 @@ logging.basicConfig(
 logger = logging.getLogger("whaleguard.api")
 
 
+async def _outbox_pump(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            await asyncio.to_thread(dispatch_pending_outbox)
+        except Exception as exc:
+            logger.warning("Outbox pump deferred error_type=%s", type(exc).__name__)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=2.0)
+        except TimeoutError:
+            continue
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     if settings.auto_create_schema:
@@ -38,9 +52,19 @@ async def lifespan(_app: FastAPI):
     if settings.seed_on_startup:
         with SessionLocal() as db:
             seed_database(db, settings)
+    outbox_stop = asyncio.Event()
+    outbox_task = None
+    if settings.task_queue_enabled:
+        outbox_task = asyncio.create_task(_outbox_pump(outbox_stop), name="outbox-pump")
     logger.info("WhaleGuard API startup completed environment=%s", settings.environment)
-    yield
-    engine.dispose()
+    try:
+        yield
+    finally:
+        outbox_stop.set()
+        if outbox_task is not None:
+            with suppress(asyncio.CancelledError):
+                await outbox_task
+        engine.dispose()
 
 
 app = FastAPI(

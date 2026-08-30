@@ -34,7 +34,7 @@ export default function TestCasesPage() {
   const projects = useQuery({ queryKey: ["projects", "suite-selector"], queryFn: () => fetchPage<Project>("/projects?page=1&page_size=100") });
   useEffect(() => { if (!suiteId && suites.data?.items[0]) setSuiteId(suites.data.items[0].id); }, [suiteId, suites.data]);
   useEffect(() => { if (!suiteForm.project_id && projects.data?.items[0]) setSuiteForm((value) => ({ ...value, project_id: projects.data!.items[0].id })); }, [projects.data, suiteForm.project_id]);
-  const cases = useQuery({ queryKey: ["test-cases", suiteId], queryFn: () => fetchPage<TestCase>(`/test-suites/${suiteId}/cases?page=1&page_size=200`), enabled: Boolean(suiteId) });
+  const cases = useQuery({ queryKey: ["test-cases", suiteId], queryFn: () => fetchPage<TestCase>(`/test-suites/${suiteId}/cases?page=1&page_size=100`), enabled: Boolean(suiteId) });
   const createSuite = useMutation({ mutationFn: () => apiRequest<TestSuite>("/test-suites", { method: "POST", body: suiteForm }), onSuccess: (result) => { client.invalidateQueries({ queryKey: ["test-suites"] }); setSuiteId(result.id); setSuiteOpen(false); setSuiteForm((value) => ({ ...value, name: "", description: "" })); toast({ title: "测试套件已创建", tone: "success" }); } });
   const createCase = useMutation({ mutationFn: () => apiRequest<TestCase>(`/test-suites/${suiteId}/cases`, { method: "POST", body: testCaseCreatePayload(caseForm, tags) }), onSuccess: () => { client.invalidateQueries({ queryKey: ["test-cases", suiteId] }); setCaseOpen(false); setCaseForm(initialCase); setTags(""); toast({ title: "安全测试用例已添加", description: "用例仅包含非破坏性模拟输入。", tone: "success" }); } });
   const columns: Column<TestCase>[] = [

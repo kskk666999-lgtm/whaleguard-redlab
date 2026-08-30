@@ -1,7 +1,9 @@
 node_modules
 .next
 playwright-report
+playwright-report-real
 test-results
+test-results-real
 coverage
 .env*
 .local

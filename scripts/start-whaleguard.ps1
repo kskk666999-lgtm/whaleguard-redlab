@@ -15,6 +15,16 @@ try {
     $null = Ensure-WgEnvironment
     Write-WgMessage -Message "[3/5] Validating Compose configuration..." -Color "Cyan"
     Invoke-WgCompose -Arguments @("config", "--quiet")
+    $composeProject = Get-WgComposeProjectName
+    $docker = Get-WgDocker
+    $dockerTarget = Get-WgLocalDockerTarget -Docker $docker
+    $dockerPlugin = Get-WgTrustedDockerPluginConfig
+    $migration = Invoke-WgRedisVolumeMigration `
+        -Docker $docker `
+        -Endpoint $dockerTarget.Endpoint `
+        -DockerConfig $dockerPlugin.ConfigDirectory `
+        -ProjectName $composeProject
+    Write-WgMessage -Message "Redis volume migration: $($migration.Status)"
     Write-WgMessage -Message "[4/5] Building and starting WhaleGuard..." -Color "Cyan"
     # Pass Compose switches through the explicit array parameter. PowerShell
     # otherwise consumes `-d` as the common -Debug parameter before the wrapper

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import secrets
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_, select
 
@@ -16,16 +17,21 @@ from ..database import SessionLocal
 from ..dependencies import DB, require_permissions
 from ..models import (
     AgentTarget,
+    DeliveryReceipt,
     ModelChannel,
+    OutboxEvent,
     Project,
+    RunEvent,
     TestCase,
     TestResult,
     TestRun,
     TestSuite,
     User,
 )
+from ..run_events import acquire_sqlite_event_write_lock
 from ..runner import append_event, execute_run, get_run_for_update, run_state_lock
 from ..schemas import (
+    DeliveryReceiptResponse,
     Page,
     TestCaseCreate,
     TestCaseResponse,
@@ -42,6 +48,17 @@ from .common import apply_updates, get_or_404, paginate
 router = APIRouter(tags=["测试用例与运行"])
 
 
+def _worker_payload_hash(payload: WorkerEvaluationResult) -> str:
+    stable_payload = payload.model_dump(mode="json", exclude={"worker_elapsed_ms"})
+    encoded = json.dumps(
+        stable_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 @router.post("/internal/runs/{run_id}/result", include_in_schema=False)
 def accept_worker_result(
     run_id: UUID,
@@ -53,19 +70,65 @@ def accept_worker_result(
     supplied = request.headers.get("x-worker-token", "")
     if not configured or not supplied or not secrets.compare_digest(configured, supplied):
         raise HTTPException(status_code=401, detail="Worker 认证失败")
+    payload_hash = _worker_payload_hash(payload)
     with run_state_lock(run_id):
         run = get_run_for_update(db, run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="测试运行不存在")
+        receipt = db.scalar(
+            select(DeliveryReceipt).where(
+                DeliveryReceipt.run_id == run_id,
+                DeliveryReceipt.delivery_id == payload.delivery_id,
+            )
+        )
+        if receipt is not None:
+            if receipt.payload_hash != payload_hash:
+                write_audit(
+                    db,
+                    request,
+                    "worker.evaluation_callback_conflict",
+                    "test_run",
+                    run.id,
+                    outcome="denied",
+                    details={"delivery_id": str(payload.delivery_id)},
+                )
+                db.commit()
+                raise HTTPException(status_code=409, detail="delivery_id 已用于不同结果")
+            db.rollback()
+            return {"accepted": True, "duplicate": True}
+
+        issued_delivery = db.scalar(
+            select(OutboxEvent.id).where(
+                OutboxEvent.id == payload.delivery_id,
+                OutboxEvent.aggregate_type == "test_run",
+                OutboxEvent.aggregate_id == run_id,
+                OutboxEvent.event_type == "rule_evaluation.requested",
+                OutboxEvent.status == "processed",
+            )
+        )
+        if issued_delivery is None:
+            db.rollback()
+            raise HTTPException(status_code=425, detail="delivery_id 尚未登记或未就绪")
+
+        receipt = DeliveryReceipt(
+            run_id=run.id,
+            delivery_id=payload.delivery_id,
+            event_type="rule_evaluation.completed",
+            payload_hash=payload_hash,
+        )
+        db.add(receipt)
         explanation = dict(run.score_explanation or {})
         worker_results = list(explanation.get("worker_results", []))
-        worker_results.append(payload.model_dump())
+        worker_results.append(payload.model_dump(mode="json"))
         explanation["worker_results"] = worker_results[-500:]
         run.score_explanation = explanation
         append_event(
+            db,
             run,
             "evaluation.completed",
             "RQ worker 完成确定性规则复核",
+            source="worker",
+            delivery_id=str(payload.delivery_id),
             worker_security_score=payload.security_score,
         )
         write_audit(
@@ -75,10 +138,14 @@ def accept_worker_result(
             "test_run",
             run.id,
             outcome="success",
-            details={"security_score": payload.security_score},
+            details={
+                "delivery_id": str(payload.delivery_id),
+                "security_score": payload.security_score,
+            },
         )
+        receipt.processed_at = datetime.now(UTC)
         db.commit()
-    return {"accepted": True}
+    return {"accepted": True, "duplicate": False}
 
 
 @router.get("/test-suites", response_model=Page[TestSuiteResponse])
@@ -358,9 +425,10 @@ def create_run(
         requested_by_id=user.id,
         status="queued",
     )
-    append_event(run, "run.queued", "测试运行已进入队列")
+    acquire_sqlite_event_write_lock(db)
     db.add(run)
     db.flush()
+    append_event(db, run, "run.queued", "测试运行已进入队列")
     write_audit(db, request, "test_run.create", "test_run", run.id, user)
     db.commit()
     db.refresh(run)
@@ -393,6 +461,34 @@ def list_run_results(
     return paginate(db, query.order_by(TestResult.created_at), page, page_size)
 
 
+@router.get(
+    "/runs/{run_id}/delivery-receipts",
+    response_model=Page[DeliveryReceiptResponse],
+)
+def list_delivery_receipts(
+    run_id: UUID,
+    db: DB,
+    _user: User = Depends(require_permissions("runs.read")),
+    delivery_id: UUID | None = None,
+    event_type: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> Page[DeliveryReceiptResponse]:
+    """Expose the durable idempotency ledger for an authorized run."""
+    get_or_404(db, TestRun, run_id, "测试运行不存在")
+    query = select(DeliveryReceipt).where(DeliveryReceipt.run_id == run_id)
+    if delivery_id is not None:
+        query = query.where(DeliveryReceipt.delivery_id == delivery_id)
+    if event_type:
+        query = query.where(DeliveryReceipt.event_type == event_type[:120])
+    return paginate(
+        db,
+        query.order_by(DeliveryReceipt.received_at.desc()),
+        page,
+        page_size,
+    )
+
+
 @router.post("/runs/{run_id}/pause", response_model=TestRunResponse)
 def pause_run(
     run_id: UUID,
@@ -405,7 +501,7 @@ def pause_run(
         raise HTTPException(status_code=409, detail="当前状态不能暂停")
     run.pause_requested = True
     run.status = "waiting_approval"
-    append_event(run, "run.pause_requested", "已请求暂停")
+    append_event(db, run, "run.pause_requested", "已请求暂停")
     write_audit(db, request, "test_run.pause", "test_run", run.id, user)
     db.commit()
     db.refresh(run)
@@ -425,7 +521,7 @@ def resume_run(
         raise HTTPException(status_code=409, detail="当前运行不处于暂停状态")
     run.pause_requested = False
     run.status = "queued"
-    append_event(run, "run.resumed", "测试运行已恢复并重新入队")
+    append_event(db, run, "run.resumed", "测试运行已恢复并重新入队")
     write_audit(db, request, "test_run.resume", "test_run", run.id, user)
     db.commit()
     db.refresh(run)
@@ -446,7 +542,7 @@ def cancel_run(
     run.cancellation_requested = True
     run.status = "cancelled"
     run.finished_at = datetime.now(UTC)
-    append_event(run, "run.cancelled", "测试运行已取消")
+    append_event(db, run, "run.cancelled", "测试运行已取消")
     write_audit(db, request, "test_run.cancel", "test_run", run.id, user)
     db.commit()
     db.refresh(run)
@@ -481,9 +577,16 @@ def retry_run(
         max_retries=old.max_retries,
         requested_by_id=user.id,
     )
-    append_event(retry, "run.queued", "重试任务已进入队列", retried_from=str(old.id))
+    acquire_sqlite_event_write_lock(db)
     db.add(retry)
     db.flush()
+    append_event(
+        db,
+        retry,
+        "run.queued",
+        "重试任务已进入队列",
+        retried_from=str(old.id),
+    )
     write_audit(
         db,
         request,
@@ -502,35 +605,85 @@ def retry_run(
 @router.get("/runs/{run_id}/events")
 async def stream_run_events(
     run_id: UUID,
+    request: Request,
     db: DB,
     _user: User = Depends(require_permissions("runs.read")),
+    cursor: int = Query(default=0, ge=0),
 ) -> StreamingResponse:
     get_or_404(db, TestRun, run_id, "测试运行不存在")
+    # FastAPI keeps request-scoped yield dependencies alive until a streaming
+    # response ends. Authentication and the existence check above have already
+    # completed, and the generator deliberately uses a fresh short-lived Session
+    # for every poll, so release this transaction/connection before opening a
+    # potentially long-lived SSE stream. ``get_db`` will close it again safely.
+    db.rollback()
+    db.close()
 
     async def event_generator():
-        last_sequence = 0
+        last_sequence = cursor
+        last_event_id = request.headers.get("last-event-id", "")
+        if last_event_id:
+            try:
+                last_sequence = max(last_sequence, max(0, int(last_event_id)))
+            except ValueError:
+                pass
         idle_count = 0
         while idle_count < 3600:
+            if await request.is_disconnected():
+                return
             with SessionLocal() as stream_db:
                 run = stream_db.get(TestRun, run_id)
                 if run is None:
                     yield 'event: error\ndata: {"detail":"run not found"}\n\n'
                     return
-                events = [
-                    event
-                    for event in (run.event_log or [])
-                    if int(event.get("sequence", 0)) > last_sequence
-                ]
+                events = list(
+                    stream_db.scalars(
+                        select(RunEvent)
+                        .where(
+                            RunEvent.run_id == run_id,
+                            RunEvent.sequence > last_sequence,
+                        )
+                        .order_by(RunEvent.sequence)
+                        .limit(100)
+                    )
+                )
                 for event in events:
-                    last_sequence = int(event.get("sequence", last_sequence))
-                    event_name = event.get("event", "message")
-                    event_data = json.dumps(event, ensure_ascii=False)
+                    last_sequence = event.sequence
+                    event_name = (
+                        "".join(
+                            char
+                            for char in event.event_type
+                            if char.isalnum() or char in {".", "_", "-"}
+                        )[:120]
+                        or "message"
+                    )
+                    event_data = json.dumps(
+                        {
+                            "id": str(event.id),
+                            "sequence": event.sequence,
+                            "timestamp": event.created_at.isoformat(),
+                            "event": event.event_type,
+                            "source": event.source,
+                            "message": (event.payload or {}).get("message", ""),
+                            "data": (event.payload or {}).get("data", {}),
+                        },
+                        ensure_ascii=False,
+                    )
                     yield f"id: {last_sequence}\nevent: {event_name}\ndata: {event_data}\n\n"
                 if run.status in {"completed", "failed", "cancelled"}:
-                    yield f"event: end\ndata: {json.dumps({'status': run.status})}\n\n"
-                    return
-            idle_count += 1
-            if idle_count % 20 == 0:
+                    has_more = stream_db.scalar(
+                        select(RunEvent.id)
+                        .where(
+                            RunEvent.run_id == run_id,
+                            RunEvent.sequence > last_sequence,
+                        )
+                        .limit(1)
+                    )
+                    if has_more is None:
+                        yield f"event: end\ndata: {json.dumps({'status': run.status})}\n\n"
+                        return
+            idle_count = 0 if events else idle_count + 1
+            if idle_count and idle_count % 20 == 0:
                 yield ": heartbeat\n\n"
             await asyncio.sleep(0.5)
 
@@ -539,3 +692,43 @@ async def stream_run_events(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get("/runs/{run_id}/event-history")
+def list_run_events(
+    run_id: UUID,
+    db: DB,
+    _user: User = Depends(require_permissions("runs.read")),
+    after_sequence: int = Query(default=0, ge=0),
+    page_size: int = Query(default=100, ge=1, le=200),
+) -> dict:
+    get_or_404(db, TestRun, run_id, "测试运行不存在")
+    rows = list(
+        db.scalars(
+            select(RunEvent)
+            .where(
+                RunEvent.run_id == run_id,
+                RunEvent.sequence > after_sequence,
+            )
+            .order_by(RunEvent.sequence)
+            .limit(page_size + 1)
+        )
+    )
+    has_more = len(rows) > page_size
+    visible = rows[:page_size]
+    return {
+        "items": [
+            {
+                "id": event.id,
+                "run_id": event.run_id,
+                "sequence": event.sequence,
+                "event_type": event.event_type,
+                "source": event.source,
+                "payload": event.payload,
+                "created_at": event.created_at,
+            }
+            for event in visible
+        ],
+        "next_cursor": visible[-1].sequence if has_more and visible else None,
+        "has_more": has_more,
+    }

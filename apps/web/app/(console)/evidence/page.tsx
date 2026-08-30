@@ -24,7 +24,7 @@ function EvidencePageContent() {
   const findingId = params.get("finding_id");
   const { toast } = useApp();
   const [selected, setSelected] = useState<Evidence | null>(null);
-  const query = useQuery({ queryKey: ["evidence", findingId], queryFn: () => fetchPage<Evidence>(`/evidence?page=1&page_size=200${findingId ? `&finding_id=${encodeURIComponent(findingId)}` : ""}`) });
+  const query = useQuery({ queryKey: ["evidence", findingId], queryFn: () => fetchPage<Evidence>(`/evidence?page=1&page_size=100${findingId ? `&finding_id=${encodeURIComponent(findingId)}` : ""}`) });
   const copyHash = async (value: string) => { await navigator.clipboard.writeText(value); toast({ title: "哈希已复制", description: "可用于离线校验证据完整性。", tone: "success" }); };
   const columns: Column<Evidence>[] = [
     { key: "type", header: "证据类型", searchValue: (row) => row.evidence_type || row.type || "record", render: (row) => <div className="flex items-center gap-2"><div className="rounded-md bg-primary/10 p-1.5 text-primary"><Fingerprint className="h-3.5 w-3.5" /></div><Badge tone="info">{row.evidence_type || row.type || "record"}</Badge></div> },

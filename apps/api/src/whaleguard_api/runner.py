@@ -3,11 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
@@ -19,17 +18,17 @@ from .models import (
     Evidence,
     Finding,
     ModelChannel,
+    OutboxEvent,
     TestCase,
     TestResult,
     TestRun,
 )
-from .queueing import enqueue_rule_evaluation
+from .outbox import dispatch_pending_outbox
+from .run_events import acquire_sqlite_event_write_lock, append_event, run_state_lock
 from .scope_guard import ScopeDenied, guarded_request
 from .scoring import aggregate_scores, score_metrics
 
 logger = logging.getLogger("whaleguard.runner")
-
-_RUN_STATE_LOCKS = tuple(threading.RLock() for _ in range(64))
 
 try:
     from whaleguard_worker.evaluator import evaluate_rules as shared_evaluate_rules
@@ -37,33 +36,19 @@ except ImportError:  # Standalone API installs retain an equivalent rules fallba
     shared_evaluate_rules = None
 
 
-def append_event(run: TestRun, event: str, message: str, **data) -> None:
-    events = list(run.event_log or [])
-    events.append(
-        {
-            "sequence": len(events) + 1,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "event": event,
-            "message": message,
-            "data": data,
-        }
-    )
-    run.event_log = events[-1000:]
-
-
-def run_state_lock(run_id: UUID) -> threading.RLock:
-    """Serialize JSON state updates for one run in single-process SQLite deployments."""
-    return _RUN_STATE_LOCKS[run_id.int % len(_RUN_STATE_LOCKS)]
-
-
-def get_run_for_update(db, run_id: UUID) -> TestRun | None:
-    """Lock one run row on databases that support SELECT FOR UPDATE."""
-    return db.scalar(
+def run_for_update_statement(run_id: UUID):
+    """Build the run claim shared by API and background transactions."""
+    return (
         select(TestRun)
         .where(TestRun.id == run_id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
+
+
+def get_run_for_update(db, run_id: UUID) -> TestRun | None:
+    """Lock one run row on databases that support SELECT FOR UPDATE."""
+    return db.scalar(run_for_update_statement(run_id))
 
 
 def _safe_mock_result(case: TestCase) -> dict:
@@ -537,6 +522,7 @@ def _persist_case_result(
     aggregate.append((score, score_detail))
     run.progress = round(index / total * 100)
     append_event(
+        db,
         run,
         "case.completed",
         f"完成：{case.name}",
@@ -570,6 +556,7 @@ def _persist_case_result(
         )
     run.status = "waiting_approval"
     append_event(
+        db,
         run,
         "run.waiting_approval",
         "敏感模拟操作已被权限围栏拦截，等待人工审批",
@@ -579,8 +566,8 @@ def _persist_case_result(
     return True
 
 
-def _enqueue_persisted_evaluations(db, run: TestRun) -> None:
-    """Dispatch rule rechecks only after every case result is durably persisted."""
+def _stage_persisted_evaluations(db, run: TestRun) -> None:
+    """Write durable delivery intents in the same transaction as run completion."""
     rows = db.execute(
         select(TestResult, TestCase)
         .join(TestCase, TestResult.test_case_id == TestCase.id)
@@ -590,39 +577,80 @@ def _enqueue_persisted_evaluations(db, run: TestRun) -> None:
     for result, case in rows:
         output = result.raw_output or {}
         trace = output.get("trace")
-        queue_job_id = enqueue_rule_evaluation(
-            run.id,
-            {
-                "id": case.case_key,
-                "evaluator": case.evaluator,
-                "expected_behavior": case.expected_behavior,
-                "forbidden_behavior": case.forbidden_behavior,
-            },
-            str(output.get("output", "")),
-            trace if isinstance(trace, list) else [],
-            result.latency_ms,
-        )
-        if queue_job_id:
-            append_event(
-                run,
-                "evaluation.queued",
-                "确定性规则复核已提交 RQ worker",
-                job_id=queue_job_id,
-                test_case_id=str(case.id),
+        delivery_id = uuid4()
+        db.add(
+            OutboxEvent(
+                id=delivery_id,
+                event_type="rule_evaluation.requested",
+                aggregate_type="test_run",
+                aggregate_id=run.id,
+                payload={
+                    "delivery_id": str(delivery_id),
+                    "run_id": str(run.id),
+                    "test_case_id": str(case.id),
+                    "test_result_id": str(result.id),
+                    "test_case": {
+                        "id": case.case_key,
+                        "evaluator": case.evaluator,
+                        "expected_behavior": case.expected_behavior,
+                        "forbidden_behavior": case.forbidden_behavior,
+                    },
+                    "output": str(output.get("output", "")),
+                    "trace": trace if isinstance(trace, list) else [],
+                    "latency_ms": result.latency_ms,
+                },
+                status="pending",
             )
+        )
+
+
+def _record_run_failure(
+    run_id: UUID,
+    *,
+    error_summary: str,
+    message: str,
+    reason: str | None = None,
+) -> bool:
+    """Record a background failure without reusing a poisoned transaction."""
+    with SessionLocal() as failure_db:
+        with run_state_lock(run_id):
+            acquire_sqlite_event_write_lock(failure_db)
+            failed_run = get_run_for_update(failure_db, run_id)
+            if failed_run is None or failed_run.status not in {"queued", "running"}:
+                failure_db.rollback()
+                return False
+            failed_run.status = "failed"
+            failed_run.error_summary = error_summary[:1000]
+            failed_run.finished_at = datetime.now(UTC)
+            event_data = {"reason": reason[:500]} if reason else {}
+            append_event(
+                failure_db,
+                failed_run,
+                "run.failed",
+                message,
+                **event_data,
+            )
+            failure_db.commit()
+            return True
 
 
 def execute_run(run_id: UUID) -> None:
     with SessionLocal() as db:
-        run = db.get(TestRun, run_id)
-        if run is None or run.status in {"cancelled", "completed"}:
-            return
-        run.status = "running"
-        run.started_at = run.started_at or datetime.now(UTC)
-        run.pause_requested = False
-        append_event(run, "run.started", "测试运行已开始", attempt=run.attempt)
-        db.commit()
         try:
+            # Claim exactly one queued run. PostgreSQL serializes contenders on
+            # the row; SQLite uses the process-local transaction lock.
+            with run_state_lock(run_id):
+                acquire_sqlite_event_write_lock(db)
+                run = get_run_for_update(db, run_id)
+                if run is None or run.status != "queued":
+                    db.rollback()
+                    return
+                run.status = "running"
+                run.started_at = run.started_at or datetime.now(UTC)
+                run.pause_requested = False
+                append_event(db, run, "run.started", "测试运行已开始", attempt=run.attempt)
+                db.commit()
+
             cases = list(
                 db.scalars(
                     select(TestCase)
@@ -668,20 +696,21 @@ def execute_run(run_id: UUID) -> None:
                             future.cancel()
                         run.status = "cancelled"
                         run.finished_at = datetime.now(UTC)
-                        append_event(run, "run.cancelled", "测试运行已取消")
+                        append_event(db, run, "run.cancelled", "测试运行已取消")
                         db.commit()
                         return
                     if run.pause_requested:
                         for future in futures.values():
                             future.cancel()
                         run.status = "waiting_approval"
-                        append_event(run, "run.paused", "测试运行已暂停，等待恢复")
+                        append_event(db, run, "run.paused", "测试运行已暂停，等待恢复")
                         db.commit()
                         return
                     if case.id in completed_case_ids:
                         run.progress = round(index / total * 100)
                         continue
                     append_event(
+                        db,
                         run,
                         "case.started",
                         f"开始执行：{case.name}",
@@ -709,38 +738,46 @@ def execute_run(run_id: UUID) -> None:
 
             final_score, score_explanation = aggregate_scores(aggregate)
             with run_state_lock(run.id):
+                acquire_sqlite_event_write_lock(db)
                 locked_run = get_run_for_update(db, run.id)
-                if locked_run is None:
+                if locked_run is None or locked_run.status != "running":
+                    db.rollback()
                     return
-                _enqueue_persisted_evaluations(db, locked_run)
+                _stage_persisted_evaluations(db, locked_run)
                 locked_run.security_score = final_score
                 locked_run.score_explanation = score_explanation
                 locked_run.progress = 100
                 locked_run.status = "completed"
                 locked_run.finished_at = datetime.now(UTC)
                 append_event(
+                    db,
                     locked_run,
                     "run.completed",
                     "测试运行完成",
                     security_score=final_score,
                 )
                 db.commit()
+            dispatch_pending_outbox(run_id=run.id)
         except TimeoutError:
-            run.status = "failed"
-            run.error_summary = "测试用例执行超过配置的超时时间。"
-            run.finished_at = datetime.now(UTC)
-            append_event(run, "run.failed", "测试运行超时")
-            db.commit()
+            db.rollback()
+            _record_run_failure(
+                run_id,
+                error_summary="测试用例执行超过配置的超时时间。",
+                message="测试运行超时",
+            )
         except (ScopeDenied, ValueError) as exc:
-            run.status = "failed"
-            run.error_summary = str(exc)[:1000]
-            run.finished_at = datetime.now(UTC)
-            append_event(run, "run.failed", "安全策略阻止了测试运行", reason=str(exc)[:500])
-            db.commit()
+            db.rollback()
+            _record_run_failure(
+                run_id,
+                error_summary=str(exc),
+                message="安全策略阻止了测试运行",
+                reason=str(exc),
+            )
         except Exception as exc:
-            logger.exception("Test run failed run_id=%s error_type=%s", run.id, type(exc).__name__)
-            run.status = "failed"
-            run.error_summary = "测试运行失败；详细原因已记录在服务端日志。"
-            run.finished_at = datetime.now(UTC)
-            append_event(run, "run.failed", "测试运行发生内部错误")
-            db.commit()
+            logger.exception("Test run failed run_id=%s error_type=%s", run_id, type(exc).__name__)
+            db.rollback()
+            _record_run_failure(
+                run_id,
+                error_summary="测试运行失败；详细原因已记录在服务端日志。",
+                message="测试运行发生内部错误",
+            )

@@ -23,7 +23,8 @@ from ..models import (
     TestRun,
     User,
 )
-from ..runner import append_event, execute_run
+from ..run_events import acquire_sqlite_event_write_lock, append_event
+from ..runner import execute_run, get_run_for_update
 from ..schemas import (
     ApprovalCreate,
     ApprovalDecision,
@@ -45,6 +46,16 @@ from .auth import user_response
 from .common import apply_updates, get_or_404, paginate
 
 router = APIRouter(tags=["审批、知识库、审计与设置"])
+
+
+def approval_for_update_statement(approval_id: UUID):
+    """Build the approval claim used by PostgreSQL decision transactions."""
+    return (
+        select(ApprovalRequest)
+        .where(ApprovalRequest.id == approval_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
 
 
 @router.get("/dashboard/summary", response_model=DashboardSummary)
@@ -140,22 +151,40 @@ def decide_approval(
     db: DB,
     user: User = Depends(require_permissions("approvals.decide")),
 ) -> ApprovalRequest:
-    approval = get_or_404(db, ApprovalRequest, approval_id, "审批请求不存在")
+    # SQLite has no row-level SELECT FOR UPDATE support, so acquire its
+    # process-local writer lock before the first read. PostgreSQL uses the two
+    # row locks below in the stable approval -> run order.
+    acquire_sqlite_event_write_lock(db)
+    approval = db.scalar(approval_for_update_statement(approval_id))
+    if approval is None:
+        raise HTTPException(status_code=404, detail="审批请求不存在")
     if approval.status != "pending":
         raise HTTPException(status_code=409, detail="审批请求已经处理")
+    run = get_run_for_update(db, approval.run_id) if approval.run_id else None
     approval.status = payload.status
     approval.decision_reason = payload.decision_reason
     approval.decided_by_id = user.id
     approval.decided_at = datetime.now(UTC)
-    run = db.get(TestRun, approval.run_id) if approval.run_id else None
+    should_start_run = False
     if run and run.status == "waiting_approval" and not run.pause_requested:
         if payload.status == "approved":
             run.status = "queued"
-            append_event(run, "approval.approved", "人工审批通过，测试运行重新入队")
+            should_start_run = True
+            append_event(
+                db,
+                run,
+                "approval.approved",
+                "人工审批通过，测试运行重新入队",
+            )
         else:
             run.status = "cancelled"
             run.finished_at = datetime.now(UTC)
-            append_event(run, "approval.rejected", "人工审批拒绝，测试运行已取消")
+            append_event(
+                db,
+                run,
+                "approval.rejected",
+                "人工审批拒绝，测试运行已取消",
+            )
     write_audit(
         db,
         request,
@@ -167,7 +196,7 @@ def decide_approval(
     )
     db.commit()
     db.refresh(approval)
-    if run and payload.status == "approved":
+    if should_start_run and run is not None:
         background_tasks.add_task(execute_run, run.id)
     return approval
 

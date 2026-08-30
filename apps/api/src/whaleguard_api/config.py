@@ -5,7 +5,7 @@ import secrets
 from functools import lru_cache
 from typing import Annotated, Any, Literal
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -95,6 +95,12 @@ class Settings(BaseSettings):
         if "*" in value:
             raise ValueError("Wildcard CORS origins are not allowed")
         return value
+
+    @model_validator(mode="after")
+    def require_worker_token_for_queue(self) -> Settings:
+        if self.task_queue_enabled and (self.worker_token is None or not self.worker_token.strip()):
+            raise ValueError("WG_WORKER_TOKEN is required when the task queue is enabled")
+        return self
 
     @property
     def effective_encryption_secret(self) -> str:

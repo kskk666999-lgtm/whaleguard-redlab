@@ -1,0 +1,408 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+  PIP_VERSION: "26.2.1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  backend:
+    name: Backend, Scope Guard, Worker, API
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            apps/api/pyproject.toml
+            apps/worker/pyproject.toml
+            packages/policy-engine/pyproject.toml
+            labs/*/requirements*.txt
+
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install "pip==${PIP_VERSION}"
+          python -m pip install -e './packages/policy-engine[test]'
+          python -m pip install -e './apps/worker[test]'
+          python -m pip install -e './apps/api[dev]' pyyaml jsonschema
+          python -m pip install -r labs/mock-llm/requirements-dev.txt
+          python -m pip install -r labs/mock-agent/requirements-dev.txt
+          python -m pip install -r labs/mock-mcp-server/requirements-dev.txt
+
+      - name: Validate test cases, Compose policy, and workflow policy
+        run: |
+          python scripts/validate_test_cases.py
+          python scripts/validate_compose.py
+          python scripts/security/validate_workflows.py
+
+      - name: Check Python formatting and lint
+        run: |
+          python -m ruff format --check apps packages labs scripts
+          python -m ruff check apps packages labs scripts
+
+      - name: Run Scope Guard tests
+        working-directory: packages/policy-engine
+        run: python -m pytest -q
+
+      - name: Run Worker tests
+        working-directory: apps/worker
+        run: python -m pytest -q
+
+      - name: Run API tests
+        working-directory: apps/api
+        run: python -m pytest -q
+
+      - name: Run Mock Lab tests
+        run: |
+          python -m pytest -q labs/mock-llm
+          python -m pytest -q labs/mock-agent
+          python -m pytest -q labs/mock-mcp-server
+
+      - name: Run Alembic round trip and Windows automation tests
+        run: |
+          python scripts/test_migrations.py
+          python -m pytest -q scripts/tests
+          python -m pytest -q scripts/security/tests
+
+  frontend:
+    name: Frontend lint, typecheck, component, build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install locked frontend dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run frontend lint
+        run: npm run lint
+
+      - name: Run TypeScript check
+        run: npm run typecheck
+
+      - name: Run component tests
+        run: npm test
+
+      - name: Build production frontend
+        run: npm run build
+
+  postgres-redis-rq:
+    name: PostgreSQL, Redis, Alembic, RQ
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      redis:
+        image: redis:7.4.11-alpine3.21@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://whaleguard_ci:ci-postgres-password-not-a-secret@127.0.0.1:5432/whaleguard_ci
+      REDIS_URL: redis://127.0.0.1:6379/0
+      RQ_QUEUE: whaleguard-ci
+      WORKER_NAME_FILE: /tmp/whaleguard-ci-worker-name
+      WHALEGUARD_ENVIRONMENT: test
+      WHALEGUARD_SEED_ON_STARTUP: "false"
+      WHALEGUARD_AUTO_CREATE_SCHEMA: "false"
+      WHALEGUARD_TASK_QUEUE_ENABLED: "true"
+      WHALEGUARD_ALLOWED_HOSTS: 127.0.0.1,localhost
+      WHALEGUARD_JWT_SECRET: ci-jwt-value-is-ephemeral-and-not-a-secret
+      WHALEGUARD_ENCRYPTION_SECRET: ci-encryption-value-is-ephemeral
+      WHALEGUARD_CREDENTIALS_FILE: /tmp/whaleguard-ci-credentials.txt
+      WG_WORKER_TOKEN: ci-worker-token-is-ephemeral
+      WG_WORKER_ALLOWED_API_ORIGINS: http://127.0.0.1:8000
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build and start the security-refreshed PostgreSQL image
+        run: |
+          docker build --pull \
+            --tag whaleguard-postgres:16.15-alpine3.23 \
+            --file infra/docker/postgres/Dockerfile \
+            .
+          docker run --detach \
+            --name whaleguard-ci-postgres \
+            --publish 127.0.0.1:5432:5432 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --env POSTGRES_DB=whaleguard_ci \
+            --env POSTGRES_USER=whaleguard_ci \
+            --env POSTGRES_PASSWORD=ci-postgres-password-not-a-secret \
+            --health-cmd "pg_isready -U whaleguard_ci -d whaleguard_ci" \
+            --health-interval 5s \
+            --health-timeout 3s \
+            --health-retries 20 \
+            whaleguard-postgres:16.15-alpine3.23
+          for attempt in $(seq 1 60); do
+            state="$(docker inspect --format '{{.State.Health.Status}}' whaleguard-ci-postgres)"
+            if [ "$state" = healthy ]; then
+              break
+            fi
+            if [ "$state" = unhealthy ] || [ "$attempt" -eq 60 ]; then
+              docker logs whaleguard-ci-postgres
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$(docker exec whaleguard-ci-postgres stat -c %u /proc/1)" \
+            = "$(docker exec whaleguard-ci-postgres id -u postgres)"
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            apps/api/pyproject.toml
+            apps/worker/pyproject.toml
+            packages/policy-engine/pyproject.toml
+
+      - name: Install integration dependencies
+        run: |
+          python -m pip install "pip==${PIP_VERSION}"
+          python -m pip install ./packages/policy-engine ./apps/worker ./apps/api
+
+      - name: Upgrade the real PostgreSQL database
+        run: python -m alembic -c apps/api/alembic.ini upgrade head
+
+      - name: Start API and RQ worker
+        run: |
+          python -m uvicorn whaleguard_api.main:app --host 127.0.0.1 --port 8000 \
+            > /tmp/whaleguard-ci-api.log 2>&1 &
+          echo $! > /tmp/whaleguard-ci-api.pid
+          python -m whaleguard_worker.main > /tmp/whaleguard-ci-worker.log 2>&1 &
+          echo $! > /tmp/whaleguard-ci-worker.pid
+
+      - name: Wait for API and live RQ registration
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8000/ready > /dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              exit 1
+            fi
+            sleep 1
+          done
+          for attempt in $(seq 1 60); do
+            if python -m whaleguard_worker.healthcheck; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Prove PostgreSQL, Redis, and RQ job execution
+        run: python scripts/security/check_postgres_redis_rq.py
+
+      - name: Show integration diagnostics
+        if: always()
+        run: |
+          echo "--- API log ---"
+          tail -n 120 /tmp/whaleguard-ci-api.log 2>/dev/null || true
+          echo "--- Worker log ---"
+          tail -n 120 /tmp/whaleguard-ci-worker.log 2>/dev/null || true
+
+      - name: Stop integration processes
+        if: always()
+        run: |
+          test ! -f /tmp/whaleguard-ci-worker.pid || kill "$(cat /tmp/whaleguard-ci-worker.pid)" 2>/dev/null || true
+          test ! -f /tmp/whaleguard-ci-api.pid || kill "$(cat /tmp/whaleguard-ci-api.pid)" 2>/dev/null || true
+
+      - name: Remove integration PostgreSQL
+        if: always()
+        run: |
+          docker logs --tail 120 whaleguard-ci-postgres 2>/dev/null || true
+          docker rm --force whaleguard-ci-postgres 2>/dev/null || true
+
+  docker-smoke:
+    name: Docker Compose smoke and real browser flow
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js for real-stack browser verification
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install locked browser test dependencies
+        working-directory: apps/web
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Generate ephemeral CI configuration
+        run: |
+          python scripts/bootstrap_env.py
+          project_name="$(python scripts/migrate_redis_volume.py --print-project-name)"
+          printf 'WG_COMPOSE_PROJECT=%s\n' "$project_name" >> "$GITHUB_ENV"
+
+      - name: Validate and build Compose stack
+        run: |
+          docker compose --project-name "$WG_COMPOSE_PROJECT" \
+            --file docker-compose.yml --env-file .env config --quiet
+          python scripts/validate_compose.py
+          docker compose --project-name "$WG_COMPOSE_PROJECT" \
+            --file docker-compose.yml --env-file .env build --pull
+
+      - name: Start and wait for all eight services
+        run: |
+          docker compose --project-name "$WG_COMPOSE_PROJECT" \
+            --file docker-compose.yml --env-file .env up -d --wait --wait-timeout 420
+          running="$(docker compose --project-name "$WG_COMPOSE_PROJECT" \
+            --file docker-compose.yml --env-file .env \
+            ps --status running --services | wc -l | tr -d ' ')"
+          test "$running" -eq 8
+          curl --fail --silent http://127.0.0.1:8000/ready
+          curl --fail --silent http://127.0.0.1:3000/login > /dev/null
+
+      - name: Run authenticated twelve-step product smoke
+        shell: pwsh
+        run: >-
+          ./scripts/smoke-test.ps1
+          -ApiBase http://127.0.0.1:8000/api/v1
+          -WebBase http://127.0.0.1:3000
+          -CredentialPath "$env:GITHUB_WORKSPACE/.local/first-run-credentials.txt"
+          -RuntimeMode Docker
+          -TimeoutSeconds 240
+
+      - name: Run Playwright against FastAPI, PostgreSQL, Redis, and RQ
+        working-directory: apps/web
+        env:
+          WG_E2E_WEB_BASE_URL: http://127.0.0.1:3000
+          WG_E2E_API_BASE_URL: http://127.0.0.1:8000/api/v1
+          WG_E2E_CREDENTIALS_FILE: ${{ github.workspace }}/.local/first-run-credentials.txt
+        run: npm run test:e2e:real
+
+      - name: Upload real-stack Playwright diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-real-stack-report
+          path: |
+            apps/web/playwright-report-real
+            apps/web/test-results-real
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-smoke-report
+          path: .local/smoke-report.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Show Docker diagnostics
+        if: always()
+        run: |
+          project_name="${WG_COMPOSE_PROJECT:-$(python scripts/migrate_redis_volume.py --print-project-name)}"
+          docker compose --project-name "$project_name" \
+            --file docker-compose.yml --env-file .env ps --all || true
+          docker compose --project-name "$project_name" \
+            --file docker-compose.yml --env-file .env logs --no-color --tail 120 || true
+
+      - name: Tear down ephemeral stack
+        if: always()
+        run: |
+          project_name="${WG_COMPOSE_PROJECT:-$(python scripts/migrate_redis_volume.py --print-project-name)}"
+          docker compose --project-name "$project_name" \
+            --file docker-compose.yml --env-file .env \
+            down --volumes --remove-orphans
+
+  playwright:
+    name: Playwright deterministic mocked UI flows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install locked frontend dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install Playwright Chromium and system dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Run deterministic UI flows against a real Next.js server
+        run: npm run test:e2e:mock
+
+      - name: Upload Playwright diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: warn
+          retention-days: 14

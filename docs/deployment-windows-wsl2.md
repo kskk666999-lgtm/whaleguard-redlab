@@ -19,8 +19,8 @@ sed -i "s/^WHALEGUARD_APP_GID=.*/WHALEGUARD_APP_GID=$(id -g)/" .env
 随后运行：
 
 ```bash
-docker compose config --quiet
-docker compose up --build
+make compose-check
+make dev
 ```
 
 5. Windows 浏览器访问 <http://127.0.0.1:3000>。只有 Web/API 绑定回环地址，Mock 服务不会暴露到 Windows 网络。

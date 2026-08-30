@@ -1,0 +1,105 @@
+name: Build Release Candidate Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Candidate version label; this workflow never creates a tag or release
+        required: true
+        default: v0.1.1
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  TRIVY_VERSION: "v0.74.0"
+  SYFT_VERSION: "v1.51.1"
+
+jobs:
+  build-candidate:
+    name: Unsigned source, SBOM, scan, checksums
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pinned Syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          syft-version: ${{ env.SYFT_VERSION }}
+
+      - name: Generate SBOMs from clean HEAD before candidate artifacts exist
+        run: >-
+          python scripts/security/generate_sbom.py
+          --syft "${{ steps.syft.outputs.cmd }}"
+          --output-dir "$RUNNER_TEMP/whaleguard-source-sbom"
+
+      - name: Build unsigned source candidate without creating a tag
+        run: >-
+          python scripts/security/package_release.py
+          --version "$RELEASE_VERSION"
+          --output-dir artifacts/release
+
+      - name: Collect clean source SBOMs into the candidate
+        run: cp "$RUNNER_TEMP/whaleguard-source-sbom/"* artifacts/release/
+
+      - name: Install pinned Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache: true
+
+      - name: Preserve complete release-candidate scan report
+        run: >-
+          trivy fs
+          --scanners vuln,misconfig,secret,license
+          --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          --format json
+          --output artifacts/release/trivy-source.json
+          --exit-code 0
+          --ignorefile .trivyignore.yaml
+          --secret-config trivy-secret.yaml
+          --skip-dirs artifacts
+          --timeout 15m
+          .
+
+      - name: Gate unignored High/Critical release findings
+        run: >-
+          trivy fs
+          --scanners vuln,misconfig,secret
+          --severity HIGH,CRITICAL
+          --format table
+          --exit-code 1
+          --ignorefile .trivyignore.yaml
+          --secret-config trivy-secret.yaml
+          --skip-dirs artifacts
+          --timeout 15m
+          .
+
+      - name: Generate SHA256SUMS for every candidate asset
+        run: python scripts/security/generate_checksums.py artifacts/release
+
+      - name: Upload candidate only; do not publish a release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: whaleguard-${{ inputs.version }}-release-candidate
+          path: artifacts/release
+          if-no-files-found: error
+          retention-days: 30

@@ -186,6 +186,30 @@ try {
     Assert-WgValue ($findings.total -ge 1) "The run did not produce a Finding."
     $evidence = Invoke-WgApi -Method GET -Path "/evidence?project_id=$($demoProject.id)&run_id=$($run.id)&page_size=100" -Headers $headers
     Assert-WgValue ($evidence.total -eq 15) "The run did not persist one evidence item per case."
+    $evidenceItems = @($evidence.items)
+    Assert-WgValue ($evidenceItems.Count -eq 15) "The evidence page did not return all 15 expected items."
+    $evidenceIds = @{}
+    $evidenceCheckpointEntries = @()
+    foreach ($evidenceItem in $evidenceItems) {
+        $evidenceId = [string]$evidenceItem.id
+        $evidenceSha256 = [string]$evidenceItem.sha256
+        Assert-WgValue (-not [string]::IsNullOrWhiteSpace($evidenceId)) "An evidence item has no identity."
+        Assert-WgValue (-not $evidenceIds.ContainsKey($evidenceId)) "The evidence response contains a duplicate identity."
+        Assert-WgValue ([string]$evidenceItem.project_id -eq [string]$demoProject.id) "Evidence is associated with the wrong project."
+        Assert-WgValue ([string]$evidenceItem.run_id -eq [string]$run.id) "Evidence is associated with the wrong TestRun."
+        Assert-WgValue (-not [string]::IsNullOrWhiteSpace([string]$evidenceItem.evidence_type)) "An evidence item has no type."
+        Assert-WgValue ($evidenceSha256 -cmatch "^[0-9a-f]{64}$") "An evidence item has no canonical SHA-256 digest."
+        $evidenceIds[$evidenceId] = $true
+        $evidenceCheckpointEntries += [ordered]@{
+            id = $evidenceId
+            project_id = [string]$evidenceItem.project_id
+            run_id = [string]$evidenceItem.run_id
+            finding_id = [string]$evidenceItem.finding_id
+            evidence_type = [string]$evidenceItem.evidence_type
+            sha256 = $evidenceSha256
+        }
+    }
+    $evidenceCheckpointEntries = @($evidenceCheckpointEntries | Sort-Object -Property id)
     Write-WgMessage -Message "[6/12] Results, Finding, evidence, and hashes passed." -Color "Green"
 
     $model = Invoke-WgApi -Method POST -Path "/model-channels" -Headers $headers -Body @{
@@ -309,11 +333,14 @@ try {
     Assert-WgValue ($null -ne $finding) "No Finding is available for the persistence checkpoint."
     $reportHash = (Get-FileHash -LiteralPath $reportPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $checkpoint = [ordered]@{
-        schema_version = 1
+        schema_version = 2
         created_at = [DateTime]::UtcNow.ToString("o")
         project_id = [string]$createdProject.id
+        run_project_id = [string]$demoProject.id
         run_id = [string]$run.id
         expected_result_count = 15
+        expected_evidence_count = 15
+        evidence_entries = @($evidenceCheckpointEntries)
         finding_id = [string]$finding.id
         report_id = [string]$report.id
         report_sha256 = $reportHash

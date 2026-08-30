@@ -35,6 +35,42 @@ def run_ps(source: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def make_native_migration_workspace(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, str, str]:
+    workspace = tmp_path / "workspace with spaces"
+    workspace.mkdir()
+    (workspace / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (workspace / ".env").write_text("WHALEGUARD_ENVIRONMENT=development\n", encoding="utf-8")
+    docker = workspace / "trusted-docker.exe"
+    docker.write_bytes(b"fixture")
+    config = workspace / ".local" / "docker-cli-config"
+    config.mkdir(parents=True)
+    project = "whaleguard-redlab-deadbeefcafe"
+    volume = f"{project}_redis_data"
+    return workspace, docker, config, project, volume
+
+
+def native_migration_prelude(workspace: Path, docker: Path, config: Path, project: str) -> str:
+    endpoint = "npipe:////./pipe/docker_engine"
+    return f"""
+. {ps_quote(COMMON)}
+$script:MigrationCalls = @()
+function Get-WgRoot {{ return {ps_quote(workspace)} }}
+function Get-WgDocker {{ return {ps_quote(docker)} }}
+function Get-WgComposeProjectName {{ return {ps_quote(project)} }}
+function Get-WgLocalDockerTarget {{
+    param([string]$Docker = '')
+    return [PSCustomObject]@{{ ContextName = 'desktop-linux'; Endpoint = {ps_quote(endpoint)} }}
+}}
+function Get-WgTrustedDockerPluginConfig {{
+    return [PSCustomObject]@{{ ConfigDirectory = {ps_quote(config)}; ComposePath = 'fixture' }}
+}}
+function Assert-WgComposeOwnership {{ param([string]$Docker, [string]$Endpoint) }}
+function Get-WgPython {{ throw 'HOST_PYTHON_MUST_NOT_BE_USED' }}
+"""
+
+
 def test_all_powershell_scripts_parse_in_windows_powershell_51() -> None:
     source = r"""
 $failed = $false
@@ -162,6 +198,35 @@ def test_docker_resume_requires_real_persistence_checks() -> None:
     assert '"down"' in resume
     assert '"up", "-d"' in resume
     assert '"-v"' not in resume
+
+
+def test_persistence_checkpoint_pins_exact_evidence_identity_and_hashes() -> None:
+    smoke = (ROOT / "scripts" / "smoke-test.ps1").read_text(encoding="utf-8")
+    persistence = (ROOT / "scripts" / "verify-persistence.ps1").read_text(encoding="utf-8")
+
+    assert "schema_version = 2" in smoke
+    for field in (
+        "run_project_id",
+        "expected_evidence_count",
+        "evidence_entries",
+        "finding_id",
+        "evidence_type",
+        "sha256",
+    ):
+        assert field in smoke
+        assert field in persistence
+    assert "Sort-Object -Property id" in smoke
+    assert 'evidenceSha256 -cmatch "^[0-9a-f]{64}$"' in smoke
+    assert "checkpoint.schema_version -eq 2" in persistence
+    assert (
+        '"/evidence?project_id=$($checkpoint.run_project_id)&run_id=$($checkpoint.run_id)'
+        in persistence
+    )
+    assert "$expectedEvidenceById.ContainsKey($evidenceId)" in persistence
+    assert "$persistedEvidenceById.ContainsKey($evidenceId)" in persistence
+    for association in ("project_id", "run_id", "finding_id", "evidence_type", "sha256"):
+        assert f"$evidenceItem.{association}" in persistence
+        assert f"$expectedEvidence.{association}" in persistence
 
 
 def test_wsl_version_probe_decodes_windows_utf16_without_nuls() -> None:
@@ -680,6 +745,565 @@ $second = Get-WgComposeProjectName
 if ($first -notmatch '^whaleguard-redlab-[0-9a-f]{{12}}$') {{ exit 2 }}
 if ($first -ne $repeat) {{ exit 3 }}
 if ($first -eq $second) {{ exit 4 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_windows_start_uses_native_redis_migration_without_host_python() -> None:
+    start = (ROOT / "scripts" / "start-whaleguard.ps1").read_text(encoding="utf-8-sig")
+    common = COMMON.read_text(encoding="utf-8-sig")
+
+    assert "Invoke-WgRedisVolumeMigration" in start
+    assert "Get-WgPython" not in start
+    assert "migrate_redis_volume.py" not in start
+    assert '"volume", "rm"' not in common
+    assert '"volume", "prune"' not in common
+
+
+def test_native_redis_migration_absent_volume_is_fail_closed_without_python(
+    tmp_path: Path,
+) -> None:
+    workspace, docker, config, project, volume = make_native_migration_workspace(tmp_path)
+    compose_json = json.dumps({"name": project, "volumes": {"redis_data": {"name": volume}}})
+    endpoint = "npipe:////./pipe/docker_engine"
+    source = (
+        native_migration_prelude(workspace, docker, config, project)
+        + f"""
+$script:FallbackList = @()
+function Invoke-WgExternalCommandCapture {{
+    param([string]$FilePath, [string[]]$Arguments = @())
+    $script:MigrationCalls += [PSCustomObject]@{{ File = $FilePath; Argv = @($Arguments) }}
+    if ($Arguments.Count -ge 3 -and $Arguments[-3] -eq 'config' -and $Arguments[-1] -eq 'json') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @({ps_quote(compose_json)}) }}
+    }}
+    if (
+        $Arguments.Count -ge 3 -and
+        $Arguments[-3] -eq 'volume' -and
+        $Arguments[-2] -eq 'inspect'
+    ) {{
+        return [PSCustomObject]@{{ ExitCode = 1; Output = @() }}
+    }}
+    if ($Arguments -contains 'ls') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @($script:FallbackList) }}
+    }}
+    return [PSCustomObject]@{{ ExitCode = 99; Output = @('unexpected command') }}
+}}
+$result = Invoke-WgRedisVolumeMigration `
+    -Docker {ps_quote(docker)} `
+    -Endpoint {ps_quote(endpoint)} `
+    -DockerConfig {ps_quote(config)} `
+    -ProjectName {ps_quote(project)}
+if ($result.Status -cne 'not_needed' -or $result.VolumePresent) {{ exit 2 }}
+if ($script:MigrationCalls.Count -ne 3) {{ exit 3 }}
+foreach ($call in @($script:MigrationCalls)) {{
+    $argv = @($call.Argv)
+    if ($call.File -cne {ps_quote(docker)}) {{ exit 4 }}
+    if ($argv.Count -lt 4) {{ exit 5 }}
+    if ($argv[0] -cne '--config' -or $argv[1] -cne {ps_quote(config)}) {{ exit 6 }}
+    if ($argv[2] -cne '--host' -or $argv[3] -cne {ps_quote(endpoint)}) {{ exit 7 }}
+    for ($index = 0; $index -lt ($argv.Count - 1); $index += 1) {{
+        if ($argv[$index] -ceq 'volume' -and $argv[$index + 1] -in @('rm', 'prune')) {{ exit 8 }}
+    }}
+}}
+$script:FallbackList = @({ps_quote(volume)})
+try {{
+    $null = Invoke-WgRedisVolumeMigration `
+        -Docker {ps_quote(docker)} `
+        -Endpoint {ps_quote(endpoint)} `
+        -DockerConfig {ps_quote(config)} `
+        -ProjectName {ps_quote(project)}
+    exit 9
+}}
+catch {{
+    if ($_.Exception.Message -notmatch 'inconsistent Redis volume listing') {{ exit 10 }}
+}}
+exit 0
+"""
+    )
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+@pytest.mark.parametrize("invalid_control", ["docker", "endpoint", "config", "project"])
+def test_native_redis_migration_rejects_noncanonical_controls_before_commands(
+    tmp_path: Path, invalid_control: str
+) -> None:
+    workspace, docker, config, project, _volume = make_native_migration_workspace(tmp_path)
+    untrusted_docker = workspace / "untrusted-docker.exe"
+    untrusted_docker.write_bytes(b"fixture")
+    untrusted_config = workspace / ".local" / "other-docker-config"
+    untrusted_config.mkdir()
+    arguments = {
+        "docker": (untrusted_docker, "npipe:////./pipe/docker_engine", config, project),
+        "endpoint": (docker, "npipe:////./pipe/dockerDesktopLinuxEngine", config, project),
+        "config": (docker, "npipe:////./pipe/docker_engine", untrusted_config, project),
+        "project": (docker, "npipe:////./pipe/docker_engine", config, f"{project}-other"),
+    }
+    supplied_docker, endpoint, supplied_config, supplied_project = arguments[invalid_control]
+    source = (
+        native_migration_prelude(workspace, docker, config, project)
+        + f"""
+$script:CaptureCalled = $false
+function Invoke-WgExternalCommandCapture {{
+    param([string]$FilePath, [string[]]$Arguments = @())
+    $script:CaptureCalled = $true
+    throw 'Docker command must not run for invalid controls.'
+}}
+try {{
+    $null = Invoke-WgRedisVolumeMigration `
+        -Docker {ps_quote(supplied_docker)} `
+        -Endpoint {ps_quote(endpoint)} `
+        -DockerConfig {ps_quote(supplied_config)} `
+        -ProjectName {ps_quote(supplied_project)}
+    exit 2
+}}
+catch {{
+    $message = $_.Exception.Message
+    if ($message -notmatch 'trusted local Docker path, config, endpoint, and project') {{
+        exit 3
+    }}
+}}
+if ($script:CaptureCalled) {{ exit 4 }}
+exit 0
+"""
+    )
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+@pytest.mark.parametrize(
+    ("root_owned", "expected_status", "expected_roles"),
+    [
+        (2, "migrated", ["inspection", "mutation", "postcheck"]),
+        (0, "already_compatible", ["inspection", "postcheck"]),
+    ],
+)
+def test_native_redis_migration_preserves_legitimate_upgrade_flow(
+    tmp_path: Path,
+    root_owned: int,
+    expected_status: str,
+    expected_roles: list[str],
+) -> None:
+    workspace, docker, config, project, volume = make_native_migration_workspace(tmp_path)
+    compose_json = json.dumps({"name": project, "volumes": {"redis_data": {"name": volume}}})
+    volume_json = json.dumps(
+        [
+            {
+                "Name": volume,
+                "Driver": "local",
+                "Scope": "local",
+                "Options": None,
+                "Labels": {
+                    "com.docker.compose.project": project,
+                    "com.docker.compose.volume": "redis_data",
+                },
+            }
+        ]
+    )
+    endpoint = "npipe:////./pipe/docker_engine"
+    source = (
+        native_migration_prelude(workspace, docker, config, project)
+        + f"""
+$script:HelperCalls = @()
+function Invoke-WgExternalCommandCapture {{
+    param([string]$FilePath, [string[]]$Arguments = @())
+    $script:MigrationCalls += [PSCustomObject]@{{ File = $FilePath; Argv = @($Arguments) }}
+    if ($Arguments.Count -ge 3 -and $Arguments[-3] -eq 'config' -and $Arguments[-1] -eq 'json') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @({ps_quote(compose_json)}) }}
+    }}
+    if (
+        $Arguments.Count -ge 3 -and
+        $Arguments[-3] -eq 'volume' -and
+        $Arguments[-2] -eq 'inspect'
+    ) {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @({ps_quote(volume_json)}) }}
+    }}
+    if ($Arguments.Count -ge 5 -and $Arguments[4] -eq 'ps') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @() }}
+    }}
+    if ($Arguments.Count -ge 2 -and $Arguments[-2] -eq 'stop' -and $Arguments[-1] -eq 'redis') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @() }}
+    }}
+    return [PSCustomObject]@{{ ExitCode = 99; Output = @('unexpected command') }}
+}}
+function Invoke-WgRedisScopedMigrationHelper {{
+    param(
+        [string]$Docker,
+        [string[]]$DockerBaseArguments,
+        [string]$VolumeName,
+        [string]$ProjectName,
+        [string]$Role,
+        [string]$User,
+        [string[]]$Capabilities = @(),
+        [bool]$ReadOnlyVolume,
+        [string]$Command,
+        [string]$Image
+    )
+    $script:HelperCalls += [PSCustomObject]@{{
+        Role = $Role; User = $User; Capabilities = @($Capabilities); ReadOnly = $ReadOnlyVolume
+    }}
+    if ($Docker -cne {ps_quote(docker)} -or $VolumeName -cne {ps_quote(volume)}) {{ exit 20 }}
+    if ($ProjectName -cne {ps_quote(project)}) {{ exit 21 }}
+    if ($Image -notmatch '^redis:7[.]4[.]11-alpine3[.]21@sha256:[0-9a-f]{{64}}$') {{ exit 22 }}
+    if ($Role -ceq 'inspection') {{
+        if ($User -cne '0:0' -or -not $ReadOnlyVolume) {{ exit 23 }}
+        $capsOk = Test-WgExactCapabilitySet `
+            -Actual $Capabilities `
+            -Expected @('DAC_READ_SEARCH')
+        if (-not $capsOk) {{ exit 24 }}
+        return '{root_owned} 0000000000000004 0000000000000004 0000000000000004'
+    }}
+    if ($Role -ceq 'mutation') {{
+        if ($User -cne '0:0' -or $ReadOnlyVolume) {{ exit 25 }}
+        $capsOk = Test-WgExactCapabilitySet `
+            -Actual $Capabilities `
+            -Expected @('CHOWN', 'DAC_READ_SEARCH')
+        if (-not $capsOk) {{ exit 26 }}
+        return '0000000000000005 0000000000000005 0000000000000005'
+    }}
+    if ($Role -ceq 'postcheck') {{
+        if (
+            $User -cne 'redis' -or
+            -not $ReadOnlyVolume -or
+            @($Capabilities).Count -ne 0
+        ) {{ exit 27 }}
+        return '0 0000000000000000 0000000000000000 0000000000000000'
+    }}
+    exit 28
+}}
+$result = Invoke-WgRedisVolumeMigration `
+    -Docker {ps_quote(docker)} `
+    -Endpoint {ps_quote(endpoint)} `
+    -DockerConfig {ps_quote(config)} `
+    -ProjectName {ps_quote(project)}
+if ($result.Status -cne {ps_quote(expected_status)} -or -not $result.VolumePresent) {{ exit 2 }}
+if (
+    $result.RootOwnedEntriesBefore -ne {root_owned} -or
+    $result.RootOwnedEntriesAfter -ne 0
+) {{ exit 3 }}
+$expectedMutationCap = $(if ({root_owned} -gt 0) {{ '0000000000000005' }} else {{ '' }})
+if ([string]$result.MutationHelperCapEff -cne $expectedMutationCap) {{ exit 4 }}
+$rolesOk = Test-WgExactStringList `
+    -Actual @($script:HelperCalls.Role) `
+    -Expected @({", ".join(ps_quote(role) for role in expected_roles)})
+if (-not $rolesOk) {{ exit 5 }}
+$stopCalls = @($script:MigrationCalls | Where-Object {{ @($_.Argv) -contains 'stop' }})
+if ($stopCalls.Count -ne 1) {{ exit 6 }}
+exit 0
+"""
+    )
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("Scope", "global"),
+        ("Options", 1),
+        ("Options", {"type": "none", "o": "bind", "device": r"C:\\unsafe"}),
+    ],
+)
+def test_native_redis_migration_rejects_unsafe_volume_before_stop(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    workspace, docker, config, project, volume = make_native_migration_workspace(tmp_path)
+    compose_json = json.dumps({"name": project, "volumes": {"redis_data": {"name": volume}}})
+    volume_payload: dict[str, object] = {
+        "Name": volume,
+        "Driver": "local",
+        "Scope": "local",
+        "Options": None,
+        "Labels": {
+            "com.docker.compose.project": project,
+            "com.docker.compose.volume": "redis_data",
+        },
+    }
+    volume_payload[field] = value
+    volume_json = json.dumps([volume_payload])
+    endpoint = "npipe:////./pipe/docker_engine"
+    source = (
+        native_migration_prelude(workspace, docker, config, project)
+        + f"""
+function Invoke-WgExternalCommandCapture {{
+    param([string]$FilePath, [string[]]$Arguments = @())
+    $script:MigrationCalls += [PSCustomObject]@{{ File = $FilePath; Argv = @($Arguments) }}
+    if ($Arguments.Count -ge 3 -and $Arguments[-3] -eq 'config' -and $Arguments[-1] -eq 'json') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @({ps_quote(compose_json)}) }}
+    }}
+    if (
+        $Arguments.Count -ge 3 -and
+        $Arguments[-3] -eq 'volume' -and
+        $Arguments[-2] -eq 'inspect'
+    ) {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @({ps_quote(volume_json)}) }}
+    }}
+    return [PSCustomObject]@{{ ExitCode = 99; Output = @('unexpected command') }}
+}}
+try {{
+    $null = Invoke-WgRedisVolumeMigration `
+        -Docker {ps_quote(docker)} `
+        -Endpoint {ps_quote(endpoint)} `
+        -DockerConfig {ps_quote(config)} `
+        -ProjectName {ps_quote(project)}
+    exit 2
+}}
+catch {{
+    if ($_.Exception.Message -notmatch 'outside this exact local Compose project') {{ exit 3 }}
+}}
+if ($script:MigrationCalls.Count -ne 2) {{ exit 4 }}
+foreach ($call in @($script:MigrationCalls)) {{
+    if (@($call.Argv) -contains 'stop' -or @($call.Argv) -contains 'create') {{ exit 5 }}
+}}
+exit 0
+"""
+    )
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_native_redis_migration_refuses_redis_still_running_after_stop(
+    tmp_path: Path,
+) -> None:
+    workspace, docker, config, project, volume = make_native_migration_workspace(tmp_path)
+    compose_json = json.dumps({"name": project, "volumes": {"redis_data": {"name": volume}}})
+    volume_json = json.dumps(
+        [
+            {
+                "Name": volume,
+                "Driver": "local",
+                "Scope": "local",
+                "Options": None,
+                "Labels": {
+                    "com.docker.compose.project": project,
+                    "com.docker.compose.volume": "redis_data",
+                },
+            }
+        ]
+    )
+    container_id = "a" * 64
+    container_json = json.dumps(
+        [
+            {
+                "Id": container_id,
+                "Config": {
+                    "Labels": {
+                        "com.docker.compose.project": project,
+                        "com.docker.compose.service": "redis",
+                    }
+                },
+                "State": {"Running": True, "Paused": False},
+            }
+        ]
+    )
+    endpoint = "npipe:////./pipe/docker_engine"
+    source = (
+        native_migration_prelude(workspace, docker, config, project)
+        + f"""
+function Invoke-WgExternalCommandCapture {{
+    param([string]$FilePath, [string[]]$Arguments = @())
+    $script:MigrationCalls += [PSCustomObject]@{{ File = $FilePath; Argv = @($Arguments) }}
+    if ($Arguments.Count -ge 3 -and $Arguments[-3] -eq 'config' -and $Arguments[-1] -eq 'json') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @({ps_quote(compose_json)}) }}
+    }}
+    if (
+        $Arguments.Count -ge 3 -and
+        $Arguments[-3] -eq 'volume' -and
+        $Arguments[-2] -eq 'inspect'
+    ) {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @({ps_quote(volume_json)}) }}
+    }}
+    if ($Arguments.Count -ge 5 -and $Arguments[4] -eq 'ps') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @({ps_quote(container_id)}) }}
+    }}
+    if (
+        $Arguments.Count -ge 7 -and
+        $Arguments[4] -eq 'container' -and
+        $Arguments[5] -eq 'inspect'
+    ) {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @({ps_quote(container_json)}) }}
+    }}
+    if ($Arguments.Count -ge 2 -and $Arguments[-2] -eq 'stop' -and $Arguments[-1] -eq 'redis') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @() }}
+    }}
+    return [PSCustomObject]@{{ ExitCode = 99; Output = @('unexpected command') }}
+}}
+try {{
+    $null = Invoke-WgRedisVolumeMigration `
+        -Docker {ps_quote(docker)} `
+        -Endpoint {ps_quote(endpoint)} `
+        -DockerConfig {ps_quote(config)} `
+        -ProjectName {ps_quote(project)}
+    exit 2
+}}
+catch {{
+    if ($_.Exception.Message -notmatch 'still active after the required safe stop') {{ exit 3 }}
+}}
+$stopCalls = @($script:MigrationCalls | Where-Object {{ @($_.Argv) -contains 'stop' }})
+$createCalls = @($script:MigrationCalls | Where-Object {{ @($_.Argv) -contains 'create' }})
+if ($stopCalls.Count -ne 1 -or $createCalls.Count -ne 0) {{ exit 4 }}
+exit 0
+"""
+    )
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_native_redis_migration_rejects_foreign_attached_container() -> None:
+    container_id = "c" * 64
+    payload = json.dumps(
+        [
+            {
+                "Id": container_id,
+                "Config": {
+                    "Labels": {
+                        "com.docker.compose.project": "another-project",
+                        "com.docker.compose.service": "redis",
+                    }
+                },
+                "State": {"Running": False, "Paused": False},
+            }
+        ]
+    )
+    source = f"""
+. {ps_quote(COMMON)}
+function Invoke-WgExternalCommandCapture {{
+    param([string]$FilePath, [string[]]$Arguments = @())
+    if ($Arguments -contains 'ps') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @({ps_quote(container_id)}) }}
+    }}
+    if ($Arguments -contains 'container' -and $Arguments -contains 'inspect') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @({ps_quote(payload)}) }}
+    }}
+    return [PSCustomObject]@{{ ExitCode = 99; Output = @() }}
+}}
+try {{
+        Assert-WgRedisAttachedContainers `
+            -Docker 'fixture-docker.exe' `
+            -DockerBaseArguments @('--host', 'npipe:////./pipe/docker_engine') `
+        -VolumeName 'whaleguard-redlab-deadbeefcafe_redis_data' `
+        -ProjectName 'whaleguard-redlab-deadbeefcafe'
+    exit 2
+}}
+catch {{
+    if ($_.Exception.Message -notmatch 'attached outside this exact Compose project') {{ exit 3 }}
+}}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+@pytest.mark.parametrize(
+    "unsafe_change",
+    [
+        "duplicate_capability",
+        "extra_capability",
+        "network",
+        "mount_access",
+        "port_binding_shape",
+    ],
+)
+def test_native_redis_migration_helper_requires_exact_sandbox(
+    unsafe_change: str,
+) -> None:
+    container_id = "b" * 64
+    container_name = "wg-redis-migrate-inspection-fixture"
+    volume = "whaleguard-redlab-deadbeefcafe_redis_data"
+    project = "whaleguard-redlab-deadbeefcafe"
+    image = (
+        "redis:7.4.11-alpine3.21@"
+        "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf"
+    )
+    command = "printf exact"
+    payload = {
+        "Id": container_id,
+        "Name": f"/{container_name}",
+        "Config": {
+            "Image": image,
+            "User": "0:0",
+            "Entrypoint": ["sh"],
+            "Cmd": ["-ec", command],
+            "Labels": {
+                "com.whaleguard.redis-volume-migration": "true",
+                "com.whaleguard.parent-compose-project": project,
+                "com.whaleguard.redis-volume-migration-role": "inspection",
+            },
+        },
+        "HostConfig": {
+            "CapAdd": ["DAC_READ_SEARCH"],
+            "CapDrop": ["ALL"],
+            "NetworkMode": "none",
+            "ReadonlyRootfs": True,
+            "SecurityOpt": ["no-new-privileges:true"],
+            "Privileged": False,
+            "PublishAllPorts": False,
+            "PortBindings": {},
+            "Devices": [],
+            "DeviceRequests": [],
+            "PidMode": "",
+            "IpcMode": "private",
+            "CgroupnsMode": "private",
+            "UTSMode": "",
+            "UsernsMode": "",
+            "RestartPolicy": {"Name": "no"},
+            "Binds": [f"{volume}:/data:ro"],
+        },
+        "Mounts": [
+            {
+                "Type": "volume",
+                "Name": volume,
+                "Driver": "local",
+                "Destination": "/data",
+                "RW": False,
+            }
+        ],
+    }
+    changes = {
+        "duplicate_capability": (
+            "$inspection.HostConfig.CapAdd = @('DAC_READ_SEARCH', 'DAC_READ_SEARCH')"
+        ),
+        "extra_capability": "$inspection.HostConfig.CapAdd = @('DAC_READ_SEARCH', 'SYS_ADMIN')",
+        "network": "$inspection.HostConfig.NetworkMode = 'bridge'",
+        "mount_access": "$inspection.Mounts[0].RW = $true",
+        "port_binding_shape": "$inspection.HostConfig.PortBindings = 1",
+    }
+    source = f"""
+. {ps_quote(COMMON)}
+$inspection = ConvertFrom-Json -InputObject {ps_quote(json.dumps(payload))}
+Assert-WgRedisMigrationHelperInspection `
+    -Inspection $inspection `
+    -ContainerId {ps_quote(container_id)} `
+    -ContainerName {ps_quote(container_name)} `
+    -VolumeName {ps_quote(volume)} `
+    -ProjectName {ps_quote(project)} `
+    -Role 'inspection' `
+    -User '0:0' `
+    -Capabilities @('DAC_READ_SEARCH') `
+    -ReadOnlyVolume $true `
+    -Command {ps_quote(command)} `
+    -Image {ps_quote(image)}
+{changes[unsafe_change]}
+try {{
+    Assert-WgRedisMigrationHelperInspection `
+        -Inspection $inspection `
+        -ContainerId {ps_quote(container_id)} `
+        -ContainerName {ps_quote(container_name)} `
+        -VolumeName {ps_quote(volume)} `
+        -ProjectName {ps_quote(project)} `
+        -Role 'inspection' `
+        -User '0:0' `
+        -Capabilities @('DAC_READ_SEARCH') `
+        -ReadOnlyVolume $true `
+        -Command {ps_quote(command)} `
+        -Image {ps_quote(image)}
+    exit 2
+}}
+catch {{
+    if ($_.Exception.Message -notmatch 'sandbox is not exact') {{ exit 3 }}
+}}
 exit 0
 """
     result = run_ps(source)

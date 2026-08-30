@@ -313,6 +313,73 @@ class TestRun(UUIDTimestampMixin, Base):
     requested_by_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
+    delivery_receipts: Mapped[list[DeliveryReceipt]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", passive_deletes=True
+    )
+    run_events: Mapped[list[RunEvent]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="RunEvent.sequence",
+    )
+
+
+class OutboxEvent(UUIDTimestampMixin, Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        Index("ix_outbox_events_status_next_attempt", "status", "next_attempt_at"),
+        Index("ix_outbox_events_aggregate", "aggregate_type", "aggregate_id"),
+    )
+
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("test_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DeliveryReceipt(UUIDTimestampMixin, Base):
+    __tablename__ = "delivery_receipts"
+    __table_args__ = (
+        UniqueConstraint("run_id", "delivery_id", name="uq_delivery_receipts_run_delivery"),
+        Index("ix_delivery_receipts_run_received", "run_id", "received_at"),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("test_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    delivery_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    run: Mapped[TestRun] = relationship(back_populates="delivery_receipts")
+
+
+class RunEvent(UUIDTimestampMixin, Base):
+    __tablename__ = "run_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_run_events_run_sequence"),
+        Index("ix_run_events_run_created", "run_id", "created_at"),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("test_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    run: Mapped[TestRun] = relationship(back_populates="run_events")
 
 
 class TestResult(UUIDTimestampMixin, Base):

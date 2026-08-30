@@ -83,7 +83,9 @@ def test_docker_starts_with_migration_as_non_root() -> None:
     assert "USER whaleguard" in dockerfile
     assert "ARG APP_UID=1000" in dockerfile
     assert "ARG APP_GID=1000" in dockerfile
-    assert 'useradd --uid "$APP_UID" --gid "$APP_GID"' in dockerfile
-    assert "alembic upgrade head && exec uvicorn" in dockerfile
+    assert 'addgroup --system --gid "$APP_GID" whaleguard' in dockerfile
+    assert "adduser --system --disabled-password --no-create-home" in dockerfile
+    assert '--uid "$APP_UID" --ingroup whaleguard' in dockerfile
+    assert "python -m alembic upgrade head && exec python -m uvicorn" in dockerfile
     assert dockerfile.index("USER whaleguard") < dockerfile.index("alembic upgrade head")
     assert "--host 0.0.0.0" in dockerfile

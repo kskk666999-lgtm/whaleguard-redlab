@@ -11,5 +11,5 @@ export default defineConfig([
     // applicable to this runtime.
     rules: { "react-hooks/set-state-in-effect": "off" },
   },
-  globalIgnores([".next/**", "node_modules/**", "playwright-report/**", "test-results/**", "coverage/**", "next-env.d.ts"]),
+  globalIgnores([".next/**", "node_modules/**", "playwright-report/**", "playwright-report-real/**", "test-results/**", "test-results-real/**", "coverage/**", "next-env.d.ts"]),
 ]);

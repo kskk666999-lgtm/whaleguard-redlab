@@ -13,8 +13,9 @@ Docker Compose 首次凭据位于仓库根目录的 `.local/first-run-credential
 ## Redis/RQ 不可用
 
 ```bash
-docker compose ps redis worker
-docker compose logs redis worker
+WG_PROJECT="$(python3 scripts/migrate_redis_volume.py --print-project-name)"
+docker compose --project-name "$WG_PROJECT" --file docker-compose.yml --env-file .env ps redis worker
+docker compose --project-name "$WG_PROJECT" --file docker-compose.yml --env-file .env logs redis worker
 ```
 
 确认 `.env` 中 `REDIS_URL` 与 `REDIS_PASSWORD` 同源生成；不要把密码贴到 issue 或日志中。
@@ -25,7 +26,7 @@ docker compose logs redis worker
 
 ## 数据库迁移失败
 
-先运行 `docker compose logs db` 并核对数据库健康状态，再运行 `docker compose run --rm api alembic upgrade head`。不要删除 production volume 来掩盖迁移问题。
+先用 `python3 scripts/migrate_redis_volume.py --print-project-name` 取得 `WG_PROJECT`，再以 `docker compose --project-name "$WG_PROJECT" --file docker-compose.yml --env-file .env logs db` 核对数据库健康状态，并用同一组 Compose 参数执行 `run --rm api alembic upgrade head`。不要删除 production volume 来掩盖迁移问题。
 
 ## Docker 不存在
 

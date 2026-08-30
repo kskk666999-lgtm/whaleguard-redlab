@@ -1,14 +1,19 @@
 PYTHON ?= python3
 NPM ?= npm
 COMPOSE ?= docker compose
+WG_COMPOSE_PROJECT ?= whaleguard-redlab
+WG_COMPOSE = $(COMPOSE) --project-name $(WG_COMPOSE_PROJECT) --file docker-compose.yml --env-file .env
 
-.PHONY: init dev test lint format seed reset docker-up docker-down compose-check verify
+.PHONY: init redis-migrate dev test lint format seed reset docker-up docker-down compose-check docker-resilience verify
 
 init:
 	$(PYTHON) scripts/bootstrap_env.py
 
-dev: init
-	$(COMPOSE) up --build
+redis-migrate: init
+	$(PYTHON) scripts/migrate_redis_volume.py --project-name $(WG_COMPOSE_PROJECT)
+
+dev: redis-migrate
+	$(WG_COMPOSE) up --build
 
 test:
 	$(PYTHON) scripts/validate_test_cases.py
@@ -39,16 +44,19 @@ reset:
 	$(PYTHON) scripts/reset_dev.py
 	$(PYTHON) scripts/seed_demo.py
 
-docker-up: init
-	$(COMPOSE) up -d --build
+docker-up: redis-migrate
+	$(WG_COMPOSE) up -d --build
 
 docker-down:
-	$(COMPOSE) down
+	$(WG_COMPOSE) down
 
 compose-check:
-	$(COMPOSE) config --quiet
+	$(WG_COMPOSE) config --quiet
+
+docker-resilience: init
+	$(PYTHON) scripts/test_docker_resilience.py
 
 verify: lint test
 	cd apps/web && $(NPM) run build
 	cd apps/web && $(NPM) run test:e2e
-	$(COMPOSE) config --quiet
+	$(WG_COMPOSE) config --quiet

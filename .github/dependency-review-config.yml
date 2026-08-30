@@ -1,0 +1,12 @@
+# Dependency Review reports every changed dependency and blocks newly
+# introduced High/Critical advisories in runtime, development, or unknown scope.
+# If an advisory is ever allow-listed, the PR must document the false-positive
+# evidence, package scope, owner, and review expiry. The default list is empty.
+fail-on-severity: high
+fail-on-scopes:
+  - runtime
+  - development
+  - unknown
+allow-ghsas: []
+comment-summary-in-pr: never
+show-patched-versions: true

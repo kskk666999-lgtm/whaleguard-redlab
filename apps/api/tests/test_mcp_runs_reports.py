@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from whaleguard_api import runner
+from whaleguard_api.database import SessionLocal
+from whaleguard_api.models import OutboxEvent
 
 
 def test_mcp_static_analysis_never_executes(
@@ -89,7 +94,19 @@ def test_run_generates_result_finding_and_report(
     assert 0 <= run.json()["security_score"] < 100
     assert run.json()["score_explanation"]["rule_first"] is True
 
+    with SessionLocal() as db:
+        delivery_id = db.scalar(
+            select(OutboxEvent.id)
+            .where(
+                OutboxEvent.aggregate_id == UUID(run_id),
+                OutboxEvent.status == "processed",
+            )
+            .order_by(OutboxEvent.created_at, OutboxEvent.id)
+            .limit(1)
+        )
+    assert delivery_id is not None
     worker_result = {
+        "delivery_id": str(delivery_id),
         "attack_success": False,
         "refusal_correct": True,
         "over_refusal": False,
@@ -116,7 +133,14 @@ def test_run_generates_result_finding_and_report(
         json=worker_result,
     )
     assert callback.status_code == 200
-    assert callback.json() == {"accepted": True}
+    assert callback.json() == {"accepted": True, "duplicate": False}
+    duplicate = client.post(
+        f"/api/v1/internal/runs/{run_id}/result",
+        headers={"X-Worker-Token": "test-worker-token"},
+        json=worker_result,
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json() == {"accepted": True, "duplicate": True}
 
     results = client.get(f"/api/v1/runs/{run_id}/results?page_size=100", headers=auth)
     assert results.status_code == 200

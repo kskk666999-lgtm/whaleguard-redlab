@@ -14,8 +14,11 @@ x-app-security: &app-security
 
 services:
   db:
-    image: postgres:16-alpine
-    restart: unless-stopped
+    <<: *app-security
+    image: whaleguard-postgres:16.15-alpine3.23
+    build:
+      context: .
+      dockerfile: infra/docker/postgres/Dockerfile
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-whaleguard}
       POSTGRES_USER: ${POSTGRES_USER:-whaleguard}
@@ -29,13 +32,14 @@ services:
       timeout: 3s
       retries: 15
     networks: [backend]
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
 
   redis:
-    image: redis:7.4-alpine
-    restart: unless-stopped
+    <<: *app-security
+    image: whaleguard-redis:7.4-alpine
+    build:
+      context: .
+      dockerfile: infra/docker/redis/Dockerfile
+    user: redis
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?run python scripts/bootstrap_env.py first}
     command:
@@ -51,9 +55,6 @@ services:
       timeout: 3s
       retries: 15
     networks: [backend]
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
 
   api:
     <<: *app-security

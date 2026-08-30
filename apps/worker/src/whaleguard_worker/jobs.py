@@ -23,6 +23,12 @@ _PRIVATE_CALLBACK_NETWORKS = tuple(
         "fc00::/7",
     )
 )
+_CALLBACK_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0, 10.0)
+_RETRYABLE_CALLBACK_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+class CallbackResolutionError(ValueError):
+    """A potentially transient failure while resolving an approved callback host."""
 
 
 def _canonical_origin(value: str) -> str:
@@ -84,7 +90,7 @@ def _resolve_private_callback(host: str, port: int) -> tuple[str, ...]:
                 parsed = _normalize_ip(ipaddress.ip_address(raw))
                 addresses[str(parsed)] = parsed
         except (OSError, ValueError) as exc:
-            raise ValueError("callback API host could not be safely resolved") from exc
+            raise CallbackResolutionError("callback API host could not be safely resolved") from exc
 
     if not addresses:
         raise ValueError("callback API host returned no addresses")
@@ -112,7 +118,60 @@ def _callback_request_target(value: str, run_id: Any) -> tuple[httpx.URL, dict[s
     return pinned_url, headers, extensions
 
 
+def _deliver_callback_with_retry(callback: dict[str, Any], result: dict[str, Any]) -> None:
+    """Deliver one stable idempotency key across a bounded API outage window."""
+
+    worker_token = os.environ.get("WG_WORKER_TOKEN", "")
+    if not worker_token:
+        raise ValueError("WG_WORKER_TOKEN is required for callback delivery")
+
+    last_transient_error: Exception | None = None
+    attempts = len(_CALLBACK_RETRY_DELAYS_SECONDS) + 1
+    for attempt in range(attempts):
+        try:
+            target, headers, extensions = _callback_request_target(
+                str(callback["api_base"]), callback["run_id"]
+            )
+            headers["X-Worker-Token"] = worker_token
+            with httpx.Client(
+                timeout=10.0,
+                trust_env=False,
+                follow_redirects=False,
+                limits=httpx.Limits(max_keepalive_connections=0),
+            ) as client:
+                response = client.post(
+                    target,
+                    json=result,
+                    headers=headers,
+                    extensions=extensions,
+                )
+            if response.status_code in _RETRYABLE_CALLBACK_STATUS_CODES:
+                response.raise_for_status()
+            if response.is_error:
+                response.raise_for_status()
+            return
+        except (CallbackResolutionError, httpx.TransportError) as exc:
+            last_transient_error = exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in _RETRYABLE_CALLBACK_STATUS_CODES:
+                raise
+            last_transient_error = exc
+
+        if attempt >= len(_CALLBACK_RETRY_DELAYS_SECONDS):
+            break
+        time.sleep(_CALLBACK_RETRY_DELAYS_SECONDS[attempt])
+
+    if last_transient_error is None:  # pragma: no cover - defensive invariant
+        raise RuntimeError("callback delivery failed without a transient error")
+    raise last_transient_error
+
+
 def evaluate_test_job(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        delivery_id = str(UUID(str(payload["delivery_id"])))
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("delivery_id must be a UUID") from exc
+
     started = time.perf_counter()
     result = evaluate_rules(
         payload["test_case"],
@@ -121,28 +180,13 @@ def evaluate_test_job(payload: dict[str, Any]) -> dict[str, Any]:
         usage=payload.get("usage") or {},
         latency_ms=int(payload.get("latency_ms") or 0),
     ).as_dict()
+    result["delivery_id"] = delivery_id
     result["worker_elapsed_ms"] = round((time.perf_counter() - started) * 1000)
 
     callback = payload.get("callback")
     if callback:
-        target, headers, extensions = _callback_request_target(
-            str(callback["api_base"]), callback["run_id"]
-        )
-        worker_token = os.environ.get("WG_WORKER_TOKEN", "")
-        if not worker_token:
-            raise ValueError("WG_WORKER_TOKEN is required for callback delivery")
-        headers["X-Worker-Token"] = worker_token
-        with httpx.Client(
-            timeout=10.0,
-            trust_env=False,
-            follow_redirects=False,
-            limits=httpx.Limits(max_keepalive_connections=0),
-        ) as client:
-            response = client.post(
-                target,
-                json=result,
-                headers=headers,
-                extensions=extensions,
-            )
-            response.raise_for_status()
+        callback_delivery_id = str(UUID(str(callback.get("delivery_id"))))
+        if callback_delivery_id != delivery_id:
+            raise ValueError("callback delivery_id does not match job delivery_id")
+        _deliver_callback_with_retry(callback, result)
     return result

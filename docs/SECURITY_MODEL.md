@@ -36,6 +36,15 @@
 - 报告模板开启 autoescape，CSP 禁止内联脚本；附件提供哈希与下载白名单。
 - MCP JSON 只作为数据解析，绝不启动其中的 command/args。
 
+## 异步投递与回调
+
+- 测试完成与 Outbox 写入处于同一数据库事务；未提交的结果不能提前入队。
+- Worker 只消费 allowlist 中的数据型评分函数，RQ 使用 JSON serializer，禁止任意函数、实例方法和回调对象。
+- 每次投递使用 UUID `delivery_id`；`DeliveryReceipt` 的数据库唯一约束保证同一运行只应用一次业务结果，进程锁不作为生产安全边界。
+- 回调的 `delivery_id` 必须来自同一 Run 已处理的 Outbox；任意新 UUID 即使携带 Worker Token 也不能写入业务状态。Outbox 对 Run 使用级联外键，并在入队前复核所属对象。
+- 重复 ID 携带不同内容时失败关闭并记录拒绝审计；Worker 执行耗时等非业务抖动字段不参与内容一致性哈希。
+- 运行事件只保存有界、递归脱敏的 payload。Authorization、Cookie、凭据、密码、secret 和 token-like 键值均替换为 `[REDACTED]`。
+
 ## Windows Docker 执行边界
 
 - 只接受 Docker Desktop 的本机 Windows named pipe；远程 TCP/SSH context 和 Docker 客户端覆盖变量失败关闭。

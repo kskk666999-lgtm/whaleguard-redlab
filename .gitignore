@@ -9,6 +9,7 @@
 uploads/
 reports/generated/
 .local/
+artifacts/
 
 # Python
 __pycache__/
@@ -28,6 +29,8 @@ node_modules/
 coverage/
 playwright-report/
 test-results/
+playwright-report-real/
+test-results-real/
 
 # Editors and OS
 .idea/

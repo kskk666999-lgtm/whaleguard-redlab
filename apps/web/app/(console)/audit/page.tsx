@@ -18,7 +18,7 @@ type AuditLog = ApiRecord & { actor_id?: string; action: string; resource_type: 
 
 export default function AuditPage() {
   const [selected, setSelected] = useState<AuditLog | null>(null);
-  const query = useQuery({ queryKey: ["audit-logs"], queryFn: () => fetchPage<AuditLog>("/audit-logs?page=1&page_size=200") });
+  const query = useQuery({ queryKey: ["audit-logs"], queryFn: () => fetchPage<AuditLog>("/audit-logs?page=1&page_size=100") });
   const columns: Column<AuditLog>[] = [
     { key: "action", header: "操作", searchValue: (row) => `${row.action} ${row.resource_type}`, render: (row) => <div className="flex items-center gap-3"><div className="rounded-lg bg-muted p-2"><FileClock className="h-4 w-4 text-primary" /></div><div><p className="font-mono text-xs font-semibold">{row.action}</p><p className="mt-1 text-[10px] text-muted-foreground">{row.resource_type} · {shortId(row.resource_id)}</p></div></div> },
     { key: "actor", header: "操作者", searchValue: (row) => row.actor_id || "system", render: (row) => <div className="flex items-center gap-1.5 text-xs"><UserRound className="h-3.5 w-3.5 text-muted-foreground" />{shortId(row.actor_id) || "system"}</div> },

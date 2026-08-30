@@ -1,4 +1,7 @@
-# WhaleGuard AI RedLab 通宵续作进度
+# WhaleGuard AI RedLab 历史通宵续作进度
+
+> [!NOTE]
+> 本文件是 2026-08-30 Docker 安装完成前的过程快照。后续 v0.1.0 已通过 Docker 运行验收；当前状态见 [README](../README.md)，v0.1.1 发布判定见 [RELEASE](RELEASE.md)。
 
 最近更新：2026-08-30 06:12 +08:00
 
@@ -27,7 +30,7 @@
 - 受管 Compose 项目名包含规范仓库根路径的稳定哈希，隔离不同检出目录的容器、卷和网络；`.env` 与进程环境中的 `COMPOSE_BAKE` / `BUILDX_BAKE_*` 均被拒绝。
 - Windows 续作不执行全局 `wsl --shutdown`；Docker 安装、修复或升级前发现活动 Desktop/Engine/容器会 fail closed，避免误停其他 WSL 或 Docker 工作负载。
 - Windows 启动链路默认拒绝远程 Docker context，原生安全并原子生成 `.env`；只有 8 个服务全部 running/healthy 且 API `/ready` 数据库为 `ok` 才报告启动成功，诊断日志统一脱敏。
-- Docker smoke 成功后会保存无凭据的精确对象检查点；自动续作会分别执行 Compose `restart` 与不删除卷的 `down/up`，重新登录并核对原项目、TestRun、15 个 TestResult、Finding、审计 ID 和报告 SHA-256。
+- Docker smoke 成功后会保存无凭据的精确对象检查点；自动续作会分别执行 Compose `restart` 与不删除卷的 `down/up`，重新登录并核对原项目、TestRun、15 个 TestResult、Finding、Evidence 数量及其精确 ID/project/run/finding 关联、类型、SHA-256、审计 ID 和报告 SHA-256。
 
 ## 验证结果
 
@@ -62,7 +65,7 @@
 - 修复验证脚本自动猜 Docker/Local 凭据和 Mock LLM 地址的问题，改为显式运行模式。
 - 增加远程 Docker context 拒绝、逐服务 Doctor 诊断和持久化日志脱敏。
 - 增加真实 RQ Worker 注册/心跳/队列健康检查，并要求 smoke 等到 15 个 Worker 回调及持久化结果。
-- 增加精确持久化检查点，自动验证同一批数据库对象、审计 ID 和报告哈希在 Compose `restart` 与 `down/up` 后保持不变。
+- 增加精确持久化检查点，自动验证同一批数据库对象、Evidence 数量及精确身份/关联/哈希、审计 ID 和报告哈希在 Compose `restart` 与 `down/up` 后保持不变。
 
 ## 剩余非关键项
 

@@ -49,6 +49,22 @@ export function reportCreatePayload(form: { project_id: string; name: string; fo
   return { project_id: form.project_id, name: form.name, formats: [form.format] };
 }
 
+export function runCreatePayload(form: {
+  project_id: string;
+  suite_id: string;
+  target_type: "agent" | "model";
+  agent_target_id?: string;
+  model_channel_id?: string;
+  evaluation_mode: "rules" | "rules_with_llm_judge";
+  judge_model_channel_id?: string;
+  max_concurrency: number;
+}) {
+  const { agent_target_id, model_channel_id, ...shared } = form;
+  return form.target_type === "agent"
+    ? { ...shared, agent_target_id }
+    : { ...shared, model_channel_id };
+}
+
 export function testCaseCreatePayload(form: {
   id: string;
   name: string;

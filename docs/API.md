@@ -2,7 +2,7 @@
 
 运行后以 <http://127.0.0.1:8000/docs> 的 OpenAPI 文档为精确契约，以 <http://127.0.0.1:8000/openapi.json> 供代码生成。
 
-当前验证构建包含 53 条路径、81 个操作和 72 个组件 Schema；以后续运行实例的 OpenAPI 为准。
+当前验证构建包含 55 条路径、83 个操作和 74 个组件 Schema；以后续运行实例的 OpenAPI 为准。
 
 ## 认证约定
 
@@ -23,7 +23,10 @@ Content-Type: application/json
 - `/api/v1/agents`：Agent 目标
 - `/api/v1/mcp/servers`、`/api/v1/mcp/servers/{server_id}/analyze`：MCP 元数据导入与静态分析
 - `/api/v1/test-suites`、`/api/v1/test-cases`：测试资产
-- `/api/v1/runs`：批量运行、暂停、取消、重试和 SSE 事件
+- `/api/v1/runs`：批量运行、暂停、取消和重试
+- `/api/v1/runs/{run_id}/events`：从规范化 `RunEvent` 表读取 SSE；支持 `cursor` 与 `Last-Event-ID` 断点续读
+- `/api/v1/runs/{run_id}/event-history`：`after_sequence` + `page_size` 游标分页事件历史
+- `/api/v1/runs/{run_id}/delivery-receipts`：分页查询 Worker 幂等回执，可按 `delivery_id` 或 `event_type` 过滤
 - `/api/v1/findings`、`/api/v1/evidence`：风险与证据链
 - `/api/v1/reports`：HTML / Markdown / JSON 报告
 - `/api/v1/approvals`：高风险 Tool 人工审批
@@ -31,3 +34,7 @@ Content-Type: application/json
 - `/api/v1/knowledge-documents`、`/api/v1/settings`：知识库和系统设置
 
 API 错误使用统一 `request_id`，响应不包含堆栈、SQL 或密钥。具体状态码和 Schema 请以当前 OpenAPI 为准。
+
+`TestRun.event_log` 仍在响应中保留以兼容 v0.1.0 客户端，但已在 OpenAPI 标记 deprecated。新客户端不得把它作为完整历史来源。
+
+Worker 内部回调 `/api/v1/internal/runs/{run_id}/result` 不公开在 OpenAPI，必须携带 Worker token 和该 Run 已签发、已投递的 Outbox UUID `delivery_id`。未签发或尚未就绪返回可重试的 `425`；同一投递重复到达会返回 `{"accepted": true, "duplicate": true}`；同一 ID 的业务内容不一致时返回 `409`，且不会覆盖首次结果。

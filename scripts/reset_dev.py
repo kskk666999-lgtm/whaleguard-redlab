@@ -37,7 +37,11 @@ def main() -> None:
             resolved.unlink()
             removed.append(str(resolved))
     print("已删除本地 SQLite 状态：" + (", ".join(removed) if removed else "无"))
-    print("PostgreSQL 数据卷未自动删除；如需清空请显式运行 docker compose down -v。")
+    print(
+        "PostgreSQL 数据卷未自动删除；如需清空，先用 "
+        "scripts/migrate_redis_volume.py --print-project-name 取得项目名，再将同一项目名显式传给 "
+        "docker compose --project-name <项目名> down -v。"
+    )
 
 
 if __name__ == "__main__":

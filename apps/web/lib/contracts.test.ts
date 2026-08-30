@@ -1,4 +1,4 @@
-import { agentCreatePayload, mcpImportPayload, mcpServerCreatePayload, reportCreatePayload, scopeCreatePayload, testCaseCreatePayload } from "@/lib/contracts";
+import { agentCreatePayload, mcpImportPayload, mcpServerCreatePayload, reportCreatePayload, runCreatePayload, scopeCreatePayload, testCaseCreatePayload } from "@/lib/contracts";
 import { modelChannelInputSchema, runInputSchema, scopeInputSchema } from "@/lib/schemas";
 
 const uuid = "11111111-1111-4111-8111-111111111111";
@@ -38,5 +38,16 @@ describe("API contract payloads", () => {
     expect(runInputSchema.safeParse({ project_id: uuid, suite_id: uuid, target_type: "model", model_channel_id: "", max_concurrency: 2 }).success).toBe(false);
     expect(runInputSchema.safeParse({ project_id: uuid, suite_id: uuid, target_type: "agent", agent_target_id: uuid, evaluation_mode: "rules_with_llm_judge", judge_model_channel_id: "", max_concurrency: 2 }).success).toBe(false);
     expect(runInputSchema.safeParse({ project_id: uuid, suite_id: uuid, target_type: "agent", agent_target_id: uuid, evaluation_mode: "rules_with_llm_judge", judge_model_channel_id: uuid, max_concurrency: 2 }).success).toBe(true);
+  });
+
+  it("运行写入合同只提交当前目标类型对应的 ID", () => {
+    const shared = { project_id: uuid, suite_id: uuid, agent_target_id: uuid, model_channel_id: uuid, evaluation_mode: "rules" as const, max_concurrency: 2 };
+    const agentPayload = runCreatePayload({ ...shared, target_type: "agent" });
+    expect(agentPayload).toMatchObject({ target_type: "agent", agent_target_id: uuid });
+    expect(agentPayload).not.toHaveProperty("model_channel_id");
+
+    const modelPayload = runCreatePayload({ ...shared, target_type: "model" });
+    expect(modelPayload).toMatchObject({ target_type: "model", model_channel_id: uuid });
+    expect(modelPayload).not.toHaveProperty("agent_target_id");
   });
 });
