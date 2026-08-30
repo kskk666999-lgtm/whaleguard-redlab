@@ -69,3 +69,15 @@ def test_healthcheck_rejects_missing_stale_suspended_or_wrong_queue_worker(monke
         lambda *_args, **_kwargs: FakeWorker(),
     )
     assert not healthcheck.worker_is_healthy(stale_connection, "whaleguard-worker", "whaleguard")
+
+
+def test_healthcheck_reads_only_the_current_boot_worker_name(monkeypatch, tmp_path):
+    worker_name_file = tmp_path / "worker-name"
+    monkeypatch.setenv("WORKER_NAME_FILE", str(worker_name_file))
+    assert healthcheck.current_worker_name() is None
+
+    worker_name_file.write_text("whaleguard-worker-current\n", encoding="utf-8")
+    assert healthcheck.current_worker_name() == "whaleguard-worker-current"
+
+    worker_name_file.write_text("x" * 129, encoding="utf-8")
+    assert healthcheck.current_worker_name() is None

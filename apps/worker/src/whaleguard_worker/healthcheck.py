@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from redis import Redis
 from rq import Worker
 from rq.serializers import JSONSerializer
 
 _RUNNING_STATES = frozenset({"started", "idle", "busy"})
+_DEFAULT_WORKER_NAME_FILE = "/tmp/whaleguard-worker-name"  # noqa: S108
+
+
+def current_worker_name() -> str | None:
+    try:
+        value = Path(os.getenv("WORKER_NAME_FILE", _DEFAULT_WORKER_NAME_FILE)).read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        return None
+    value = value.strip()
+    return value if 1 <= len(value) <= 128 else None
 
 
 def worker_is_healthy(connection: Redis, worker_name: str, queue_name: str) -> bool:
@@ -39,10 +52,9 @@ def main() -> int:
             socket_connect_timeout=2,
             socket_timeout=2,
         )
-        healthy = worker_is_healthy(
-            connection,
-            os.getenv("WORKER_NAME", "whaleguard-worker"),
-            os.getenv("RQ_QUEUE", "whaleguard"),
+        worker_name = current_worker_name()
+        healthy = bool(worker_name) and worker_is_healthy(
+            connection, worker_name, os.getenv("RQ_QUEUE", "whaleguard")
         )
     except Exception:
         healthy = False
