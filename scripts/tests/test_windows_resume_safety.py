@@ -70,15 +70,20 @@ def test_system_upgrade_resume_requires_committed_25h2_and_only_hands_off() -> N
     assert "$minimumTargetWindowsBuild = 26200" in resume
     assert '$targetWindowsUpdateId = "6a8c4c24-0dd2-46b9-9d8f-bd7a84ec5ad4"' in resume
     assert "$updateSearcher.Online = $false" in resume
-    assert "Search(\"IsInstalled=1 and UpdateID='$targetWindowsUpdateId'\")" in resume
+    assert "Search(\"UpdateID='$targetWindowsUpdateId'\")" in resume
     assert 'ClientApplicationID = "WhaleGuardSystemUpgradeResume"' in resume
     assert "TargetUpdateSearchResultCode -eq 2" in resume
     assert "UptimeMinutes -ge 15" in resume
+    assert "TargetUpdateCount -eq 0" in resume
     assert "TargetUpdateCount -eq 1" in resume
+    assert "targetCatalogConsistent" in resume
     assert "TargetUpdateInstalled" in resume
     assert "TargetUpdateRebootRequired" in resume
+    assert "update_catalog_absent=" in resume
     assert "TargetHistoryOperation -eq 1" in resume
     assert "TargetHistoryResultCode -eq 2" in resume
+    assert "$null -ne $Evidence.TargetHistoryHResult" in resume
+    assert "TargetHistoryHResult -eq 0" in resume
     assert "WindowsUpdateRebootPending" in resume
     assert "ComponentServicingRebootPending" in resume
     assert "ComponentServicingRebootInProgress" in resume
@@ -126,6 +131,165 @@ def test_system_upgrade_resume_requires_committed_25h2_and_only_hands_off() -> N
     assert ".Install()" not in resume
     assert ".Download()" not in resume
     assert "AcceptEula" not in resume
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
+def test_committed_25h2_gate_accepts_absent_catalog_only_with_success_history() -> None:
+    script_path = str(ROOT / "scripts" / "resume-after-system-upgrade.ps1").replace("'", "''")
+    command = rf"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    '{script_path}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count -ne 0) {{ throw 'Resume script did not parse.' }}
+$functionAst = $ast.Find({{
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Test-Windows25H2Committed'
+}}, $true)
+if ($null -eq $functionAst) {{ throw 'Commit gate function is missing.' }}
+Invoke-Expression $functionAst.Extent.Text
+$targetWindowsDisplayVersion = '25H2'
+$minimumTargetWindowsBuild = 26200
+
+$catalogAbsent = [PSCustomObject]@{{
+    DisplayVersion = '25H2'
+    BuildNumber = 26200
+    RegistryBuildNumber = 26200
+    UptimeMinutes = 15.1
+    TargetUpdateSearchResultCode = 2
+    TargetUpdateCount = 0
+    TargetUpdateFound = $false
+    TargetUpdateInstalled = $false
+    TargetUpdateRebootRequired = $true
+    TargetHistoryOperation = 1
+    TargetHistoryResultCode = 2
+    TargetHistoryHResult = 0
+    WindowsUpdateRebootPending = $false
+    ComponentServicingRebootPending = $false
+    ComponentServicingRebootInProgress = $false
+    PendingFileRenameOperations = $false
+    UpdateExeVolatile = 0
+    SystemSetupInProgress = $false
+    UpgradeInProgress = $false
+    RestartSetup = $false
+    OOBEInProgress = $false
+    WindowsUpdateOOBEInProgress = $false
+    AcceleratedInstallRequired = $false
+    MoSetupHostResult = 0
+    MoSetupBoxResult = 0
+    MoSetupOperationResult = 0
+    MoSetupRollbackMode = 0
+    SetupProcessCount = 0
+}}
+if (-not (Test-Windows25H2Committed -Evidence $catalogAbsent)) {{
+    throw 'An absent catalog record with exact successful history was rejected.'
+}}
+
+$visible = $catalogAbsent.PSObject.Copy()
+$visible.TargetUpdateCount = 1
+$visible.TargetUpdateFound = $true
+$visible.TargetUpdateInstalled = $true
+$visible.TargetUpdateRebootRequired = $false
+if (-not (Test-Windows25H2Committed -Evidence $visible)) {{
+    throw 'A visible installed catalog record was rejected.'
+}}
+
+foreach ($unsafe in @(
+    @{{
+        name = 'wrong display'; property = 'DisplayVersion'
+        value = '23H2'; base = $catalogAbsent
+    }},
+    @{{
+        name = 'old build'; property = 'BuildNumber'
+        value = 22631; base = $catalogAbsent
+    }},
+    @{{
+        name = 'registry mismatch'; property = 'RegistryBuildNumber'
+        value = 26100; base = $catalogAbsent
+    }},
+    @{{
+        name = 'uptime too short'; property = 'UptimeMinutes'
+        value = 14.9; base = $catalogAbsent
+    }},
+    @{{
+        name = 'search failed'; property = 'TargetUpdateSearchResultCode'
+        value = 4; base = $catalogAbsent
+    }},
+    @{{
+        name = 'uninstalled'; property = 'TargetUpdateInstalled'
+        value = $false; base = $visible
+    }},
+    @{{
+        name = 'identity mismatch'; property = 'TargetUpdateFound'
+        value = $false; base = $visible
+    }},
+    @{{
+        name = 'visible reboot required'; property = 'TargetUpdateRebootRequired'
+        value = $true; base = $visible
+    }},
+    @{{
+        name = 'bad operation'; property = 'TargetHistoryOperation'
+        value = 2; base = $catalogAbsent
+    }},
+    @{{
+        name = 'bad history'; property = 'TargetHistoryResultCode'
+        value = 1; base = $catalogAbsent
+    }},
+    @{{
+        name = 'bad HRESULT'; property = 'TargetHistoryHResult'
+        value = -2145116140; base = $catalogAbsent
+    }},
+    @{{
+        name = 'missing HRESULT'; property = 'TargetHistoryHResult'
+        value = $null; base = $catalogAbsent
+    }},
+    @{{
+        name = 'OOBE active'; property = 'WindowsUpdateOOBEInProgress'
+        value = $true; base = $catalogAbsent
+    }},
+    @{{
+        name = 'reboot pending'; property = 'WindowsUpdateRebootPending'
+        value = $true; base = $catalogAbsent
+    }},
+    @{{
+        name = 'CBS reboot pending'; property = 'ComponentServicingRebootPending'
+        value = $true; base = $catalogAbsent
+    }},
+    @{{
+        name = 'rename pending'; property = 'PendingFileRenameOperations'
+        value = $true; base = $catalogAbsent
+    }},
+    @{{
+        name = 'setup process active'; property = 'SetupProcessCount'
+        value = 1; base = $catalogAbsent
+    }},
+    @{{
+        name = 'accelerated install active'; property = 'AcceleratedInstallRequired'
+        value = $true; base = $catalogAbsent
+    }},
+    @{{
+        name = 'duplicate catalog'; property = 'TargetUpdateCount'
+        value = 2; base = $catalogAbsent
+    }}
+)) {{
+    $candidate = $unsafe.base.PSObject.Copy()
+    $candidate.($unsafe.property) = $unsafe.value
+    if (Test-Windows25H2Committed -Evidence $candidate) {{
+        throw "Unsafe gate evidence was accepted: $($unsafe.name)"
+    }}
+}}
+'PASS'
+"""
+    result = subprocess.run(  # noqa: S603
+        [POWERSHELL, "-NoProfile", "-Command", command],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == "PASS"
 
 
 def test_manual_resume_batch_dispatches_system_upgrade_state_first() -> None:

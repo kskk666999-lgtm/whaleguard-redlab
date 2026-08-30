@@ -218,7 +218,7 @@ function Get-Windows25H2CommitEvidence {
         $updateSession.ClientApplicationID = "WhaleGuardSystemUpgradeResume"
         $updateSearcher = $updateSession.CreateUpdateSearcher()
         $updateSearcher.Online = $false
-        $searchResult = $updateSearcher.Search("IsInstalled=1 and UpdateID='$targetWindowsUpdateId'")
+        $searchResult = $updateSearcher.Search("UpdateID='$targetWindowsUpdateId'")
         $targetUpdate = if ($searchResult.Updates.Count -eq 1) {
             $searchResult.Updates.Item(0)
         }
@@ -234,6 +234,7 @@ function Get-Windows25H2CommitEvidence {
 
         $historyResultCode = $null
         $historyOperation = $null
+        $historyHResult = $null
         $historyDate = $null
         $historyCount = [Math]::Min($updateSearcher.GetTotalHistoryCount(), 200)
         if ($historyCount -gt 0) {
@@ -260,6 +261,7 @@ function Get-Windows25H2CommitEvidence {
             if ($null -ne $latestHistoryEntry) {
                 $historyResultCode = [int]$latestHistoryEntry.ResultCode
                 $historyOperation = [int]$latestHistoryEntry.Operation
+                $historyHResult = [int]$latestHistoryEntry.HResult
                 $historyDate = [DateTime]$latestHistoryEntry.Date
             }
         }
@@ -362,6 +364,7 @@ function Get-Windows25H2CommitEvidence {
         TargetUpdateRebootRequired = if ($null -ne $targetUpdate) { [bool]$targetUpdate.RebootRequired } else { $true }
         TargetHistoryResultCode = $historyResultCode
         TargetHistoryOperation = $historyOperation
+        TargetHistoryHResult = $historyHResult
         TargetHistoryDate = $historyDate
         WindowsUpdateRebootPending = Test-Path -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired" -ErrorAction Stop
         ComponentServicingRebootPending = Test-Path -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" -ErrorAction Stop
@@ -386,6 +389,15 @@ function Get-Windows25H2CommitEvidence {
 function Test-Windows25H2Committed {
     param([Parameter(Mandatory = $true)][object]$Evidence)
 
+    $targetCatalogConsistent = (
+        [int]$Evidence.TargetUpdateCount -eq 0 -or
+        (
+            [int]$Evidence.TargetUpdateCount -eq 1 -and
+            [bool]$Evidence.TargetUpdateFound -and
+            [bool]$Evidence.TargetUpdateInstalled -and
+            -not [bool]$Evidence.TargetUpdateRebootRequired
+        )
+    )
     return (
         [string]::Equals(
             [string]$Evidence.DisplayVersion,
@@ -396,12 +408,11 @@ function Test-Windows25H2Committed {
         [int]$Evidence.RegistryBuildNumber -eq [int]$Evidence.BuildNumber -and
         [double]$Evidence.UptimeMinutes -ge 15 -and
         [int]$Evidence.TargetUpdateSearchResultCode -eq 2 -and
-        [int]$Evidence.TargetUpdateCount -eq 1 -and
-        [bool]$Evidence.TargetUpdateFound -and
-        [bool]$Evidence.TargetUpdateInstalled -and
-        -not [bool]$Evidence.TargetUpdateRebootRequired -and
+        $targetCatalogConsistent -and
         [int]$Evidence.TargetHistoryOperation -eq 1 -and
         [int]$Evidence.TargetHistoryResultCode -eq 2 -and
+        $null -ne $Evidence.TargetHistoryHResult -and
+        [int]$Evidence.TargetHistoryHResult -eq 0 -and
         -not [bool]$Evidence.WindowsUpdateRebootPending -and
         -not [bool]$Evidence.ComponentServicingRebootPending -and
         -not [bool]$Evidence.ComponentServicingRebootInProgress -and
@@ -424,7 +435,7 @@ function Test-Windows25H2Committed {
 function Get-Windows25H2EvidenceSummary {
     param([Parameter(Mandatory = $true)][object]$Evidence)
 
-    return "display=$($Evidence.DisplayVersion) build=$($Evidence.BuildNumber) registry_build=$($Evidence.RegistryBuildNumber) uptime_minutes=$($Evidence.UptimeMinutes) search_result=$($Evidence.TargetUpdateSearchResultCode) update_count=$($Evidence.TargetUpdateCount) update_found=$($Evidence.TargetUpdateFound) installed=$($Evidence.TargetUpdateInstalled) update_reboot=$($Evidence.TargetUpdateRebootRequired) history_operation=$($Evidence.TargetHistoryOperation) history_result=$($Evidence.TargetHistoryResultCode) wu_reboot=$($Evidence.WindowsUpdateRebootPending) cbs_reboot=$($Evidence.ComponentServicingRebootPending) cbs_reboot_in_progress=$($Evidence.ComponentServicingRebootInProgress) pending_file_rename=$($Evidence.PendingFileRenameOperations) update_exe_volatile=$($Evidence.UpdateExeVolatile) setup_in_progress=$($Evidence.SystemSetupInProgress) upgrade_in_progress=$($Evidence.UpgradeInProgress) restart_setup=$($Evidence.RestartSetup) oobe_in_progress=$($Evidence.OOBEInProgress) wu_oobe_in_progress=$($Evidence.WindowsUpdateOOBEInProgress) accelerated_install=$($Evidence.AcceleratedInstallRequired) mosetup_host_result=$($Evidence.MoSetupHostResult) mosetup_box_result=$($Evidence.MoSetupBoxResult) mosetup_operation_result=$($Evidence.MoSetupOperationResult) mosetup_rollback=$($Evidence.MoSetupRollbackMode) setup_processes=$($Evidence.SetupProcessCount)"
+    return "display=$($Evidence.DisplayVersion) build=$($Evidence.BuildNumber) registry_build=$($Evidence.RegistryBuildNumber) uptime_minutes=$($Evidence.UptimeMinutes) search_result=$($Evidence.TargetUpdateSearchResultCode) update_count=$($Evidence.TargetUpdateCount) update_catalog_absent=$([int]$Evidence.TargetUpdateCount -eq 0) update_found=$($Evidence.TargetUpdateFound) installed=$($Evidence.TargetUpdateInstalled) update_reboot=$($Evidence.TargetUpdateRebootRequired) history_operation=$($Evidence.TargetHistoryOperation) history_result=$($Evidence.TargetHistoryResultCode) history_hresult=$($Evidence.TargetHistoryHResult) wu_reboot=$($Evidence.WindowsUpdateRebootPending) cbs_reboot=$($Evidence.ComponentServicingRebootPending) cbs_reboot_in_progress=$($Evidence.ComponentServicingRebootInProgress) pending_file_rename=$($Evidence.PendingFileRenameOperations) update_exe_volatile=$($Evidence.UpdateExeVolatile) setup_in_progress=$($Evidence.SystemSetupInProgress) upgrade_in_progress=$($Evidence.UpgradeInProgress) restart_setup=$($Evidence.RestartSetup) oobe_in_progress=$($Evidence.OOBEInProgress) wu_oobe_in_progress=$($Evidence.WindowsUpdateOOBEInProgress) accelerated_install=$($Evidence.AcceleratedInstallRequired) mosetup_host_result=$($Evidence.MoSetupHostResult) mosetup_box_result=$($Evidence.MoSetupBoxResult) mosetup_operation_result=$($Evidence.MoSetupOperationResult) mosetup_rollback=$($Evidence.MoSetupRollbackMode) setup_processes=$($Evidence.SetupProcessCount)"
 }
 
 function Remove-SystemUpgradeRunOnce {
