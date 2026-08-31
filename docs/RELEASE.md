@@ -9,14 +9,14 @@
 | 稳定基线 | `v0.1.0`（annotated tag） |
 | 基线提交 | `a9746d65800e9ff5d590123d589282ecde09c409` |
 | 开发版本 | `v0.1.1 Hardening` |
-| v0.1.1 tag | **不得创建，等待本页所有阻断项通过** |
+| v0.1.1 tag | **不得创建，等待远端 CI 与正式发布门禁通过** |
 | 当前发布结论 | **NOT READY TO TAG** |
 
-2026-08-31 对 v0.1.0 基线的现场复核看到 8 个 Compose 服务均为 `healthy`，API `/ready` 返回 `database: ok`，并存在 smoke、RQ callback、`restart` 和 `down/up` 持久化证据。它们证明 v0.1.0 基线可运行，**不能替代 v0.1.1 最终提交上的全量重跑**。
+2026-08-31 已在同一个干净 v0.1.1 候选上完成本机可执行门禁：257 项 Python 测试、前端构建与两条 Playwright lane、12 步 Docker 产品 smoke、schema v2 的 `restart` / `down-up` 精确持久化、三 Worker 故障恢复、Windows 原生旧 Redis 卷升级、pip/npm 审计、源码与八镜像 Syft/Trivy，以及本地无签名候选包和独立 SHA-256 复核。精确 commit 由 `.local/docker-resilience-report.json`、`artifacts/release-*/release-metadata.json` 和 `sbom-manifest.json` 共同记录；这些 ignored 本地证据不替代远端 Actions run。
 
 截至 2026-08-31，当前 checkout 尚未配置 Git remote。正式发布前必须由维护者确认官方仓库地址、GitHub Actions 结果和发布权限，并更新本段状态；不得为了填充文档而虚构仓库 URL、CI 徽章或 Release 链接。
 
-当前明确阻断项：候选 commit 尚未冻结、v0.1.1 全量门禁尚未在同一 commit 上完成、Windows 原生 `START_WHALEGUARD.bat` 尚未对真实旧版 named volume 完成入口级验收，且 GitHub Actions 尚无远端 run 证据。因此即使局部测试或 PowerShell 仿真通过，当前结论仍为 **NOT READY TO TAG**。
+当前明确阻断项只剩远端发布链路：本 checkout 没有 Git remote，PR/目标分支 GitHub Actions、手工 `Build Release Candidate Artifacts`、Release 正文、权限与发布后回读均没有可核验的远端证据。因此当前结论仍为 **NOT READY TO TAG**，不得用本地绿色结果创建 `v0.1.1` tag。
 
 ## v0.1.1 阻断式 Checklist
 
@@ -24,28 +24,28 @@
 
 ### 1. 版本与变更范围
 
-- [ ] HEAD 是计划发布的唯一提交，`git status --short` 为空。
-- [ ] `git tag --list v0.1.1` 无输出，确认不存在同名 tag。
-- [ ] API/应用版本元数据已统一为 `0.1.1`，且没有把开发分支误标为已发布。
-- [ ] 本轮只包含可靠性、持续集成、安全供应链和必要文档，没有混入 v0.2 产品功能。
-- [ ] 数据库迁移支持 `upgrade -> downgrade -> upgrade`，且兼容策略已记录。
-- [ ] `CHANGELOG.md` 已按实际合入内容更新，没有 TODO、TBD 或未验证的完成声明。
+- [x] HEAD 是计划发布的唯一提交，`git status --short` 为空。
+- [x] `git tag --list v0.1.1` 无输出，确认不存在同名 tag。
+- [x] API/应用版本元数据已统一为 `0.1.1`，且没有把开发分支误标为已发布。
+- [x] 本轮只包含可靠性、持续集成、安全供应链和必要文档，没有混入 v0.2 产品功能。
+- [x] 数据库迁移支持 `upgrade -> downgrade -> upgrade`，且兼容策略已记录。
+- [x] `CHANGELOG.md` 已按实际合入内容更新，没有 TODO、TBD 或未验证的完成声明。
 
 ### 2. 自动化测试与数据库
 
-- [ ] Python 后端、Scope Guard、Worker 和 Mock 服务测试全通过，无 skip 增量。
-- [ ] 前端 lint、typecheck、组件测试和生产构建全通过。
-- [ ] Playwright 确定性 Mock UI 流程与 Docker 真实栈流程均通过；真实栈证据必须包含随机凭据登录、项目与回环 Scope 创建、AgentArena 运行、人工审批、完成态和 15 条 RQ delivery receipt。
-- [ ] Alembic 往返迁移和必需表/约束核对通过。
-- [ ] Outbox 场景通过：事务提交前不投递、提交后投递、周期泵补投、Redis 失败保持 pending、有界退避和稳定 `delivery_id`。
-- [ ] RQ 幂等性场景全通过：顺序重复、20 路并发、超过 Worker 进程内 25 秒窗口后观察到 retry 次数递减，且任务进入 RQ `scheduled` / `queued` 或已开始第二次 `started` 执行、Redis 重连、断连重投、不同 delivery、内容冲突 `409`、回滚重试、重启重复、receipt 查询。
-- [ ] RunEvent 场景通过：sequence 唯一/单调、SSE cursor、`Last-Event-ID`、分页 history、64 KiB 上限、递归脱敏和旧 `event_log` 兼容。
-- [ ] PostgreSQL + Redis + 2–4 Worker 并发专项通过，最终业务状态只应用一次。
-- [ ] 没有通过删除断言、吞异常、移除 health check、关闭扫描或跳过测试来获得绿色结果。
+- [x] Python 后端、Scope Guard、Worker 和 Mock 服务测试全通过，无 skip 增量。
+- [x] 前端 lint、typecheck、组件测试和生产构建全通过。
+- [x] Playwright 确定性 Mock UI 流程与 Docker 真实栈流程均通过；真实栈证据必须包含随机凭据登录、项目与回环 Scope 创建、AgentArena 运行、人工审批、完成态和 15 条 RQ delivery receipt。
+- [x] Alembic 往返迁移和必需表/约束核对通过。
+- [x] Outbox 场景通过：事务提交前不投递、提交后投递、周期泵补投、Redis 失败保持 pending、有界退避和稳定 `delivery_id`。
+- [x] RQ 幂等性场景全通过：顺序重复、20 路并发、超过 Worker 进程内 25 秒窗口后观察到 retry 次数递减，且任务进入 RQ `scheduled` / `queued` 或已开始第二次 `started` 执行、Redis 重连、断连重投、不同 delivery、内容冲突 `409`、回滚重试、重启重复、receipt 查询。
+- [x] RunEvent 场景通过：sequence 唯一/单调、SSE cursor、`Last-Event-ID`、分页 history、64 KiB 上限、递归脱敏和旧 `event_log` 兼容。
+- [x] PostgreSQL + Redis + 2–4 Worker 并发专项通过，最终业务状态只应用一次。
+- [x] 没有通过删除断言、吞异常、移除 health check、关闭扫描或跳过测试来获得绿色结果。
 
 ### 3. Docker 与真实业务链路
 
-- [ ] 候选 commit 冻结且工作树无非忽略变更后，Linux/WSL 运行 `python3 scripts/test_docker_resilience.py --require-clean-git`；Windows 必须从仓库根目录显式锁定受信 CLI、本地 Engine 和受管插件目录并加同一 Git 门禁运行以下命令。两者都退出码为 0、在报告记录相同的完整 commit SHA 与 `source_git_clean: true`、输出最终成功标记，且失败或中断后已确认恢复标准单 Worker/八服务拓扑。
+- [x] 候选 commit 冻结且工作树无非忽略变更后，在实际发布验收平台运行韧性门禁：Linux/WSL 使用 `python3 scripts/test_docker_resilience.py --require-clean-git`；Windows 必须从仓库根目录显式锁定受信 CLI、本地 Engine 和受管插件目录并运行以下命令。相应平台的命令必须退出码为 0、在报告记录候选完整 commit SHA 与 `source_git_clean: true`、输出最终成功标记，并在失败、中断或成功结束后恢复标准单 Worker/八服务拓扑。
 
   ```powershell
   py -3 scripts/test_docker_resilience.py `
@@ -54,29 +54,29 @@
     --docker-host "npipe:////./pipe/docker_engine" `
     --docker-config "$PWD\.local\docker-cli-config"
   ```
-- [ ] `docker compose config` 和仓库安全不变量检查通过。
-- [ ] 从干净构建启动后，db、redis、api、worker、web、mock-llm、mock-agent、mock-mcp-server 共 8 个服务全部 `healthy`。
-- [ ] 用真实 root-owned v0.1.0 AOF/RDB 隔离卷验证自动升级：一次性 helper 只持有 `CHOWN` 与只读目录遍历所需的 `DAC_READ_SEARCH`，主 Redis PID 以非 root、零有效能力运行，数据跨升级和重启保持一致。
-- [ ] 在 Windows 11 / Windows PowerShell 5.1 上从真实旧版 named volume 直接运行 `START_WHALEGUARD.bat`：入口不调用宿主 Python，自动迁移后数据和原卷身份保持、8 个服务健康；Python helper 的实栈结果和 PowerShell 单元仿真都不能替代这项入口级门禁。
-- [ ] API `/health` 与 `/ready` 通过，数据库 readiness 为 `ok`。
-- [ ] 完整 smoke test 全通过，并生成本轮报告及 SHA-256。
-- [ ] 真实 RQ 消费和 callback 验证通过；`docker-resilience-report.json` 的 `rq_outer_retry` 记录同一 `job_id` / `delivery_id` 的 retry 次数递减、观察到的 `scheduled` / `queued` / 第二次 `started` 状态及相应注册表归属、API 断开时长和最终唯一 receipt。
-- [ ] Worker crash/restart、Redis 临时断开、API restart 和 Worker restart 场景通过。
-- [ ] `docker compose restart` 后项目、Run、Finding、Evidence、审计和报告数据保持一致；Evidence 必须逐条匹配同一 ID 集合、`project_id` / `run_id` / `finding_id` 关联、`evidence_type` 与 SHA-256，不得只比较数量。
-- [ ] 完整 `down/up` 后同一批持久化对象和报告哈希保持一致；只接受当前 smoke 生成的 schema v2 checkpoint，旧 schema v1 checkpoint 不得作为 v0.1.1 发布证据。
+- [x] `docker compose config` 和仓库安全不变量检查通过。
+- [x] 从干净构建启动后，db、redis、api、worker、web、mock-llm、mock-agent、mock-mcp-server 共 8 个服务全部 `healthy`。
+- [x] 用真实 root-owned v0.1.0 AOF/RDB 隔离卷验证自动升级：一次性 helper 只持有 `CHOWN` 与只读目录遍历所需的 `DAC_READ_SEARCH`，主 Redis PID 以非 root、零有效能力运行，数据跨升级和重启保持一致。
+- [x] 在 Windows 11 / Windows PowerShell 5.1 上从真实旧版 named volume 直接运行 `START_WHALEGUARD.bat`：入口不调用宿主 Python，自动迁移后数据和原卷身份保持、8 个服务健康；Python helper 的实栈结果和 PowerShell 单元仿真都不能替代这项入口级门禁。
+- [x] API `/health` 与 `/ready` 通过，数据库 readiness 为 `ok`。
+- [x] 完整 smoke test 全通过，并生成本轮报告及 SHA-256。
+- [x] 真实 RQ 消费和 callback 验证通过；`docker-resilience-report.json` 的 `rq_outer_retry` 记录同一 `job_id` / `delivery_id` 的 retry 次数递减、观察到的 `scheduled` / `queued` / 第二次 `started` 状态及相应注册表归属、API 断开时长和最终唯一 receipt。
+- [x] Worker crash/restart、Redis 临时断开、API restart 和 Worker restart 场景通过。
+- [x] `docker compose restart` 后项目、Run、Finding、Evidence、审计和报告数据保持一致；Evidence 必须逐条匹配同一 ID 集合、`project_id` / `run_id` / `finding_id` 关联、`evidence_type` 与 SHA-256，不得只比较数量。
+- [x] 完整 `down/up` 后同一批持久化对象和报告哈希保持一致；只接受当前 smoke 生成的 schema v2 checkpoint，旧 schema v1 checkpoint 不得作为 v0.1.1 发布证据。
 
 ### 4. CI 与安全供应链
 
 - [ ] PR 和目标分支上的 GitHub Actions 均为绿色；本地 workflow 文件存在不算 CI 已通过。
-- [ ] Workflow 使用最小权限、合理超时，来自 fork 的 PR 默认拿不到 secrets。
-- [ ] Python `pip-audit` 完整报告已保留且无运行/报告错误；Python High/Critical 由 Trivy filesystem vulnerability gate 统一阻断，npm 继续以 `audit-level=high` 阻断。
-- [ ] Dependency Review 与 secret scan 兼容检查已完成。
-- [ ] Syft 已从发布 commit 的 `git archive`（而非可能含 `.env`、`.local`、`artifacts` 或 `node_modules` 的工作目录）生成 CycloneDX 与 SPDX SBOM，`sbom-manifest.json` 的完整 commit SHA 与候选一致。
-- [ ] Trivy 文件系统和容器镜像扫描完成；Critical/High 为零，或每条例外都有负责人、理由、影响和到期日。
-- [ ] Windows 最终镜像 SBOM/Trivy 扫描为 `generate_sbom.py` 与 `scan_compose_images.py` 同时显式传入 `--docker`、`--docker-host`、`--docker-config` 和 `--require-running-match`；两个 `compose-image-inventory.json` 的 CLI、endpoint、config、Compose plugin 路径及 SHA-256 与同一候选 commit 的 `docker-resilience-report.json` 完全一致。Linux/CI 可以使用默认本地 Engine，但仍必须验证运行容器与所扫不可变 image ID 一致。
-- [ ] Medium/Low 保留在报告中，没有通过关闭扫描隐藏。
+- [x] Workflow 使用最小权限、合理超时，来自 fork 的 PR 默认拿不到 secrets。
+- [x] Python `pip-audit` 完整报告已保留且无运行/报告错误；Python High/Critical 由 Trivy filesystem vulnerability gate 统一阻断，npm 继续以 `audit-level=high` 阻断。
+- [x] Dependency Review 与 secret scan 兼容检查已完成。
+- [x] Syft 已从发布 commit 的 `git archive`（而非可能含 `.env`、`.local`、`artifacts` 或 `node_modules` 的工作目录）生成 CycloneDX 与 SPDX SBOM，`sbom-manifest.json` 的完整 commit SHA 与候选一致。
+- [x] Trivy 文件系统和容器镜像扫描完成；Critical/High 为零，或每条例外都有负责人、理由、影响和到期日。
+- [x] Windows 最终镜像 SBOM/Trivy 扫描为 `generate_sbom.py` 与 `scan_compose_images.py` 同时显式传入 `--docker`、`--docker-host`、`--docker-config` 和 `--require-running-match`；两个 `compose-image-inventory.json` 的 CLI、endpoint、config、Compose plugin 路径及 SHA-256 与同一候选 commit 的 `docker-resilience-report.json` 完全一致。Linux/CI 可以使用默认本地 Engine，但仍必须验证运行容器与所扫不可变 image ID 一致。
+- [x] Medium/Low 保留在报告中，没有通过关闭扫描隐藏。
 - [ ] 手工触发的 `Build Release Candidate Artifacts` 成功，`release-metadata.json` 中的 commit 与候选 SHA 完全一致。
-- [ ] Release 附件已生成 `SHA256SUMS`，并在独立命令中复核。
+- [x] Release 附件已生成 `SHA256SUMS`，并在独立命令中复核。
 
 ### 5. 文档、演示与截图
 
@@ -86,7 +86,7 @@
 - [x] AgentArena 真实截图已捕获并脱敏。
 - [x] Finding 详情真实截图已捕获并脱敏。
 - [x] HTML 报告预览真实截图已捕获并脱敏。
-- [ ] [5 分钟演示](DEMO_GUIDE.md)、[架构图](ARCHITECTURE.md)、README 和截图清单与最终版本一致。
+- [x] [5 分钟演示](DEMO_GUIDE.md)、[架构图](ARCHITECTURE.md)、README 和截图清单与最终版本一致。
 - [ ] GitHub Release 正文已从 [Release 模板](../.github/RELEASE_TEMPLATE.md) 填写，所有占位符均已替换。
 
 固定文件名、尺寸、SHA-256 和捕获要求见 [截图资产清单](screenshots/README.md)。不要提交设计稿、AI 生成图或空白占位图冒充实测界面。
