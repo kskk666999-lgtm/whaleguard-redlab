@@ -606,7 +606,9 @@ def test_workflows_and_exception_policy_are_valid() -> None:
     assert windows_job["runs-on"] == "windows-2025"
     windows_commands = "\n".join(str(step.get("run", "")) for step in windows_job["steps"])
     assert "pytest==$env:PYTEST_VERSION" in windows_commands
-    assert "python -m pytest -q scripts/tests/test_windows_scripts.py" in windows_commands
+    assert "PyYAML==$env:PYYAML_VERSION" in windows_commands
+    assert "python -m pytest -q scripts/tests" in windows_commands
+    assert "scripts/tests/test_windows_scripts.py" not in windows_commands
     docker_steps = ci_config["jobs"]["docker-smoke"]["steps"]
     docker_commands = "\n".join(str(step.get("run", "")) for step in docker_steps)
     assert "WHALEGUARD_APP_UID=%s\\n" in docker_commands
