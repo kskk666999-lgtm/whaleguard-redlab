@@ -533,7 +533,9 @@ if (-not (Test-WgProjectLoopbackProcess @pythonArgs)) {{ exit 5 }}
 def test_docker_supply_chain_uses_only_trusted_canonical_binaries_and_fresh_installer() -> None:
     common = COMMON.read_text(encoding="utf-8")
     resume = (ROOT / "scripts" / "resume-whaleguard-docker-setup.ps1").read_text(encoding="utf-8")
-    assert "Get-AuthenticodeSignature -LiteralPath $resolvedPath" in common
+    assert 'Join-Path $PSHOME "Modules\\Microsoft.PowerShell.Security' in common
+    assert "$authenticodeCommand = Get-WgTrustedAuthenticodeCommand" in common
+    assert "& $authenticodeCommand -LiteralPath $resolvedPath" in common
     canonical_roots = common.split("function Get-WgCanonicalDockerInstallRoots", 1)[1].split(
         "function Get-WgTrustedDockerBundleEvidence", 1
     )[0]
@@ -575,6 +577,36 @@ def test_docker_supply_chain_uses_only_trusted_canonical_binaries_and_fresh_inst
     assert "ExecutablePath" in common
     assert "different or untrusted Docker Desktop installation is already running" in common
     assert " info --format" not in common
+
+
+def test_authenticode_resolution_ignores_psmodulepath_shadow(tmp_path: Path) -> None:
+    shadow_root = tmp_path / "shadow-modules"
+    shadow_module = shadow_root / "Microsoft.PowerShell.Security"
+    shadow_module.mkdir(parents=True)
+    (shadow_module / "Microsoft.PowerShell.Security.psm1").write_text(
+        "function Get-AuthenticodeSignature { throw 'SHADOW_MODULE_EXECUTED' }\n"
+        "Export-ModuleMember -Function Get-AuthenticodeSignature\n",
+        encoding="utf-8",
+    )
+    source = rf"""
+$env:PSModulePath = {ps_quote(str(shadow_root) + ";")} + $env:PSModulePath
+. {ps_quote(COMMON)}
+$command = Get-WgTrustedAuthenticodeCommand
+$expected = [IO.Path]::GetFullPath(
+    (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1')
+)
+if ($null -eq $command.Module) {{ exit 2 }}
+if (-not [string]::Equals(
+    [IO.Path]::GetFullPath($command.Module.Path),
+    $expected,
+    [StringComparison]::OrdinalIgnoreCase
+)) {{ exit 3 }}
+$signature = & $command -LiteralPath $PSHOME\powershell.exe
+if ($null -eq $signature -or [string]$signature.Status -eq '') {{ exit 4 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
 
 
 def test_wsl_runtime_requires_version_two_and_currently_running() -> None:

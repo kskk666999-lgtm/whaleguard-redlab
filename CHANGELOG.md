@@ -32,6 +32,7 @@
 - Worker 对短暂 API/DNS/限流/5xx 故障执行 6 次有界回调尝试（累计退避 25 秒，每次请求超时 10 秒），保持同一 `delivery_id`，超限后再交由 RQ Retry 兜底。
 - Outbox 通过外键绑定所属 Run 并级联清理；dispatcher 在入队前再次拒绝孤儿事件，避免删除 Run 后残留 payload 被重新投递。
 - 人工审批与运行启动改为数据库行锁保护的原子状态迁移；并发批准只会调度一次，`execute_run` 只领取 `queued` 运行，异常事务会先回滚再独立记录失败，且不会覆盖已完成、已取消或等待审批状态。
+- Windows 启动入口从当前 PowerShell 运行时的绝对模块路径加载 Authenticode cmdlet，避免父进程污染 `PSModulePath` 时误载 PowerShell 7 同名模块或命令 shadow，仍保持 Docker 二进制签名的 fail-closed 校验。
 
 ### Security
 

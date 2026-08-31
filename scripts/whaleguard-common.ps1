@@ -710,7 +710,8 @@ function Get-WgDockerBinaryEvidence {
     }
     Assert-WgNoReparsePointInPath -Path $resolvedPath
     $item = Get-Item -LiteralPath $resolvedPath
-    $signature = Get-AuthenticodeSignature -LiteralPath $resolvedPath
+    $authenticodeCommand = Get-WgTrustedAuthenticodeCommand
+    $signature = & $authenticodeCommand -LiteralPath $resolvedPath
     $signerSubject = if ($signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { "" }
     $productName = [string]$item.VersionInfo.ProductName
     $productVersion = [string]$item.VersionInfo.ProductVersion
@@ -737,6 +738,43 @@ function Get-WgDockerBinaryEvidence {
         Version = ConvertTo-WgDockerProductVersion -Value $productVersion
         SignerSubject = $signerSubject
     }
+}
+
+function Get-WgTrustedAuthenticodeCommand {
+    # The launcher deliberately uses Windows PowerShell 5.1. A parent process
+    # can nevertheless prepend PowerShell 7 module directories to PSModulePath,
+    # causing command auto-loading to select an incompatible or shadow module.
+    # Import the security module from this exact PowerShell runtime and invoke
+    # the verified CmdletInfo object instead of resolving an unqualified name.
+    $manifestPath = [IO.Path]::GetFullPath(
+        (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1")
+    )
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "The trusted PowerShell security module is unavailable."
+    }
+    Assert-WgNoReparsePointInPath -Path $manifestPath
+    try {
+        Import-Module -Name $manifestPath -Force -ErrorAction Stop
+    }
+    catch {
+        throw "The trusted PowerShell security module could not be loaded."
+    }
+
+    $commands = @(
+        Get-Command -Name "Get-AuthenticodeSignature" -CommandType Cmdlet -All -ErrorAction Stop |
+            Where-Object {
+                $_.Module -and
+                [string]::Equals(
+                    [IO.Path]::GetFullPath($_.Module.Path),
+                    $manifestPath,
+                    [StringComparison]::OrdinalIgnoreCase
+                )
+            }
+    )
+    if ($commands.Count -ne 1) {
+        throw "The trusted Authenticode command could not be resolved uniquely."
+    }
+    return $commands[0]
 }
 
 function Get-WgCanonicalDockerInstallRoots {
