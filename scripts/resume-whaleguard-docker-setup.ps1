@@ -383,7 +383,7 @@ try {
                     -Docker $dockerCli -Endpoint $dockerTarget.Endpoint
             }
             catch {
-                if ($_.Exception.Message -notmatch "^Unable to (determine|inspect)") { throw }
+                if ($_.Exception.Message -notmatch "^No trusted local Docker Desktop engine endpoint is ready") { throw }
                 $serverReady = $false
             }
         }

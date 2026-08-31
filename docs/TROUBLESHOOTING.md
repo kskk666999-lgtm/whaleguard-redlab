@@ -32,9 +32,9 @@ docker compose --project-name "$WG_PROJECT" --file docker-compose.yml --env-file
 
 源码级单元/集成测试仍可使用本地 Python/Node 环境运行，但 Compose 配置校验和完整私有网络验收必须在安装 Docker/Compose 后执行；不能以 YAML 解析替代真实启动验收。
 
-## Docker context 被拒绝
+## Docker 本地 endpoint 未就绪
 
-Windows 启动、检查、停止、重置和验证脚本默认只允许本机 `npipe://` Docker Desktop endpoint。若设置了远程 `DOCKER_HOST`，或当前 context 指向 TCP/SSH 主机，脚本会在任何 Compose 变更前失败关闭。清除 `DOCKER_HOST`，执行 `docker context use desktop-linux`（部分安装使用 `default`），再用 `docker context inspect` 确认 endpoint 是本机 named pipe。不要为绕过此保护而修改脚本。
+Windows 启动、检查、停止、重置和验证脚本只允许 Docker Desktop 的本机 `npipe://` endpoint，并忽略可变的用户 Docker context。若设置了 `DOCKER_HOST`、`DOCKER_CONTEXT` 或其他 Docker 客户端覆盖，脚本会在任何 Compose 变更前失败关闭；请先清除这些覆盖。若提示没有可信本地 endpoint 就绪，请确认 Docker Desktop 已启动且处于 Linux containers 模式。不要通过 TCP/SSH context 或修改脚本绕过此保护。
 
 若错误指出 `COMPOSE_BAKE`、`BUILDX_BAKE_*` 或 `cli-plugins` shadowing，请从当前进程环境或本项目 `.env` 移除对应覆盖，并删除受管 `.local/docker-cli-config/cli-plugins` 影子目录；不要通过放宽门禁启用未验证插件。若安装/升级提示 Docker 工作负载仍在运行，先自行保存并正常停止相关项目；自动脚本不会替你中断无关容器或全部 WSL 发行版。
 

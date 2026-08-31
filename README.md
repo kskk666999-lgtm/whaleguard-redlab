@@ -50,7 +50,7 @@ make docker-up
 .\INSTALL_WHALEGUARD_DOCKER.bat
 ```
 
-入口先做宿主兼容预检，通过后申请一次 UAC；它不会自动重启。不满足 Windows/虚拟化兼容门禁时会在安装前停止并说明原因。只有提升阶段成功且确实需要重启时，才会注册当前用户 Startup 中有三次硬上限的一次性续作入口；手工恢复入口为 `RESUME_AFTER_REBOOT.bat`。流程会验证 WSL、Docker 官方安装器与同根 Desktop/CLI/Compose 签名、隔离的本地 Docker context、Linux containers 和 `hello-world`，再构建并验证 WhaleGuard、真实 RQ 消费及 `restart`/`down-up` 数据持久化。已有符合安全门禁的当前用户 Docker Desktop 可直接双击 `START_WHALEGUARD.bat`。详见 [第一次运行指南](RUN_ME_FIRST.md)。
+入口先做宿主兼容预检，通过后申请一次 UAC；它不会自动重启。不满足 Windows/虚拟化兼容门禁时会在安装前停止并说明原因。只有提升阶段成功且确实需要重启时，才会注册当前用户 Startup 中有三次硬上限的一次性续作入口；手工恢复入口为 `RESUME_AFTER_REBOOT.bat`。流程会验证 WSL、Docker 官方安装器与同根 Desktop/CLI/Compose 签名、固定的本地 Docker Desktop named-pipe endpoint、Linux containers 和 `hello-world`，再构建并验证 WhaleGuard、真实 RQ 消费及 `restart`/`down-up` 数据持久化。已有符合安全门禁的当前用户 Docker Desktop 可直接双击 `START_WHALEGUARD.bat`。详见 [第一次运行指南](RUN_ME_FIRST.md)。
 
 ### Linux / WSL2
 
@@ -73,7 +73,9 @@ make docker-up
 cat .local/first-run-credentials.txt
 ```
 
-Windows 首次 `.env` 由 Windows PowerShell 5.1 和系统加密随机数生成器原子创建，Docker 启动路径不要求宿主机安装 Python/Node。脚本默认拒绝远程 Docker context 和 Bake/Buildx 覆盖，并使用仓库路径哈希隔离 Compose 资源；安装/升级不会全局关闭 WSL，也不会在检测到活动 Docker 工作负载时继续。启动会等待全部 8 个服务 healthy 并检查数据库 readiness；脱敏运行日志位于 `.local/logs/`，安装日志位于 `.local/setup-logs/`。请限制凭据文件的访问范围；重置演示环境时会随机轮换密码。仓库和演示数据中不包含固定管理员密码或真实 API Key。
+Windows 首次 `.env` 由 Windows PowerShell 5.1 和系统加密随机数生成器原子创建，Docker 启动路径不要求宿主机安装 Python/Node。脚本阻断 Docker 客户端环境覆盖并忽略可变的用户 context，只探测两个 allowlist 内的本机 Docker Desktop named pipe；同时拒绝 Bake/Buildx 覆盖，并使用仓库路径哈希隔离 Compose 资源。安装/升级不会全局关闭 WSL，也不会在检测到活动 Docker 工作负载时继续。启动会等待全部 8 个服务 healthy 并检查数据库 readiness；脱敏运行日志位于 `.local/logs/`，安装日志位于 `.local/setup-logs/`。请限制凭据文件的访问范围；重置演示环境时会随机轮换密码。仓库和演示数据中不包含固定管理员密码或真实 API Key。
+
+若 Docker Desktop 已安装但尚未运行，`START_WHALEGUARD.bat` 会先验证官方签名、固定安装路径和进程归属，再以隐藏窗口启动它并有界等待本地 Linux Engine；不会连接远程 context。
 
 Linux/WSL 用户若 `id -u` 或 `id -g` 不是 `1000`，应在生成 `.env` 后把 `WHALEGUARD_APP_UID` / `WHALEGUARD_APP_GID` 改为当前非 root 用户的实际 UID/GID，再执行 `make docker-up`，否则 API 容器可能无法写入宿主机的 `.local` 目录。详见对应部署文档。
 

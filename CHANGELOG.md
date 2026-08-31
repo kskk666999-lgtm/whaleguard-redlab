@@ -33,6 +33,8 @@
 - Outbox 通过外键绑定所属 Run 并级联清理；dispatcher 在入队前再次拒绝孤儿事件，避免删除 Run 后残留 payload 被重新投递。
 - 人工审批与运行启动改为数据库行锁保护的原子状态迁移；并发批准只会调度一次，`execute_run` 只领取 `queued` 运行，异常事务会先回滚再独立记录失败，且不会覆盖已完成、已取消或等待审批状态。
 - Windows 启动入口从当前 PowerShell 运行时的绝对模块路径加载 Authenticode cmdlet，避免父进程污染 `PSModulePath` 时误载 PowerShell 7 同名模块或命令 shadow，仍保持 Docker 二进制签名的 fail-closed 校验。
+- Windows Docker 目标解析不再依赖可能陈旧或指向远端的用户 context；签名 CLI 只探测两个 allowlist 内的本地 Docker Desktop named pipe，环境覆盖仍一律阻断。
+- `START_WHALEGUARD.bat` 会在验证官方签名、安装路径和现有进程归属后按需隐藏启动 Docker Desktop，并有界等待本地 Linux Engine；其他停止、检查和重置入口仍不会隐式启动 Docker。
 
 ### Security
 

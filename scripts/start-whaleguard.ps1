@@ -10,6 +10,7 @@ $null = Start-WgOperationLog -Name "start"
 Push-Location $root
 try {
     Write-WgMessage -Message "[1/5] Checking the local Docker Desktop engine..." -Color "Cyan"
+    $null = Start-WgDockerDesktopEngine -TimeoutSeconds ([Math]::Min($TimeoutSeconds, 300))
     $null = Assert-WgDockerEngine
     Write-WgMessage -Message "[2/5] Preparing persistent local secrets..." -Color "Cyan"
     $null = Ensure-WgEnvironment

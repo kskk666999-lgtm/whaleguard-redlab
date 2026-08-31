@@ -349,20 +349,63 @@ def test_container_setup_keeps_per_user_resume_and_docker_local_only() -> None:
     assert "& $wsl --shutdown" not in resume
     assert "Assert-WgNoActiveDockerWorkloadsForInstaller" in resume
     assert "could interrupt unrelated workloads" in common
+    start = (ROOT / "scripts" / "start-whaleguard.ps1").read_text(encoding="utf-8")
+    assert "Start-WgDockerDesktopEngine -TimeoutSeconds" in start
 
 
-def test_local_docker_guard_rejects_host_override_and_remote_context(tmp_path: Path) -> None:
+def test_start_engine_launches_only_trusted_desktop_and_waits_for_local_pipe(
+    tmp_path: Path,
+) -> None:
+    desktop = tmp_path / "Docker Desktop.exe"
+    docker = tmp_path / "docker.exe"
+    desktop.write_bytes(b"fixture")
+    docker.write_bytes(b"fixture")
+    source = f"""
+. {ps_quote(COMMON)}
+$script:Started = $false
+$script:ProbeCount = 0
+function Find-WgTrustedDockerDesktopPath {{ return {ps_quote(desktop)} }}
+function Get-WgDocker {{ return {ps_quote(docker)} }}
+function Assert-WgRunningDockerDesktopOwnership {{
+    param([string]$ExpectedPath)
+    if ($ExpectedPath -ne {ps_quote(desktop)}) {{ throw 'wrong desktop path' }}
+    if ($script:Started) {{ return [PSCustomObject]@{{ Id = 42 }} }}
+    return @()
+}}
+function Start-Process {{
+    param([string]$FilePath, [string]$WindowStyle)
+    if ($FilePath -ne {ps_quote(desktop)} -or $WindowStyle -ne 'Hidden') {{
+        throw 'unsafe process launch'
+    }}
+    $script:Started = $true
+}}
+function Get-WgLocalDockerTarget {{
+    param([string]$Docker)
+    $script:ProbeCount += 1
+    if ($script:ProbeCount -lt 2) {{
+        throw 'No trusted local Docker Desktop engine endpoint is ready.'
+    }}
+    return [PSCustomObject]@{{
+        ContextName = 'local-docker-engine'
+        Endpoint = 'npipe:////./pipe/docker_engine'
+    }}
+}}
+function Start-Sleep {{ param([int]$Seconds) }}
+$target = Start-WgDockerDesktopEngine -TimeoutSeconds 30
+if (-not $script:Started -or $script:ProbeCount -ne 2) {{ exit 2 }}
+if ($target.Endpoint -ne 'npipe:////./pipe/docker_engine') {{ exit 3 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_local_docker_guard_rejects_overrides_and_requires_ready_local_pipe(
+    tmp_path: Path,
+) -> None:
     fake_docker = tmp_path / "docker.cmd"
     fake_docker.write_text(
         """@echo off
-if "%~1"=="context" if "%~2"=="show" (
-  echo remote-prod
-  exit /b 0
-)
-if "%~1"=="context" if "%~2"=="inspect" (
-  echo ssh://prod.example.invalid
-  exit /b 0
-)
 exit /b 1
 """,
         encoding="ascii",
@@ -389,7 +432,33 @@ foreach ($name in @(
     $exitCode += 2
 }}
 try {{ $null = Get-WgLocalDockerTarget -Docker {ps_quote(fake_docker)}; exit 20 }}
-catch {{ if ($_.Exception.Message -notmatch 'not a local Windows named-pipe') {{ exit 21 }} }}
+catch {{ if ($_.Exception.Message -notmatch 'No trusted local Docker Desktop') {{ exit 21 }} }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_local_docker_target_ignores_context_store_and_selects_ready_pipe(
+    tmp_path: Path,
+) -> None:
+    fake_docker = tmp_path / "docker.cmd"
+    fake_docker.write_text(
+        """@echo off
+if "%~1"=="context" exit /b 91
+if "%~1"=="--host" if "%~2"=="npipe:////./pipe/docker_engine" (
+  echo 29.7.2
+  exit /b 0
+)
+exit /b 7
+""",
+        encoding="ascii",
+    )
+    source = f"""
+. {ps_quote(COMMON)}
+$target = Get-WgLocalDockerTarget -Docker {ps_quote(fake_docker)}
+if ($target.ContextName -ne 'local-docker-engine') {{ exit 2 }}
+if ($target.Endpoint -ne 'npipe:////./pipe/docker_engine') {{ exit 3 }}
 exit 0
 """
     result = run_ps(source)
@@ -1428,7 +1497,7 @@ exit 0
     assert result.returncode == 0, result.stderr + result.stdout
 
 
-def test_local_docker_context_failure_is_normalized_under_stop(tmp_path: Path) -> None:
+def test_local_docker_endpoint_failure_is_normalized_under_stop(tmp_path: Path) -> None:
     fake_docker = tmp_path / "docker.cmd"
     fake_docker.write_text(
         "@echo off\r\necho simulated context failure 1>&2\r\nexit /b 7\r\n",
@@ -1439,7 +1508,7 @@ def test_local_docker_context_failure_is_normalized_under_stop(tmp_path: Path) -
 $ErrorActionPreference = 'Stop'
 try {{ $null = Get-WgLocalDockerTarget -Docker {ps_quote(fake_docker)}; exit 2 }}
 catch {{
-    $expectedMessage = '^Unable to determine the active Docker context'
+    $expectedMessage = '^No trusted local Docker Desktop engine endpoint is ready'
     if ($_.Exception.Message -notmatch $expectedMessage) {{ exit 3 }}
 }}
 if ($ErrorActionPreference -ne 'Stop') {{ exit 4 }}

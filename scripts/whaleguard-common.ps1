@@ -1115,27 +1115,25 @@ function Get-WgLocalDockerTarget {
     if (-not $Docker) { $Docker = Get-WgDocker }
     Assert-WgNoDockerClientOverrides
 
-    $contextResult = Invoke-WgExternalCommandCapture -FilePath $Docker -Arguments @("context", "show")
-    $contextOutput = @($contextResult.Output)
-    if ($contextResult.ExitCode -ne 0 -or $contextOutput.Count -eq 0) {
-        throw "Unable to determine the active Docker context; refusing to continue."
-    }
-    $contextName = ([string]$contextOutput[0]).Trim()
-    $endpointResult = Invoke-WgExternalCommandCapture -FilePath $Docker -Arguments @(
-        "context", "inspect", $contextName, "--format", "{{.Endpoints.docker.Host}}"
+    # Do not trust or depend on the user's mutable Docker context store. Probe
+    # only Docker Desktop's two allowlisted local named pipes with the signed
+    # CLI. Prefer the product-specific pipe when both aliases are available.
+    $candidates = @(
+        [PSCustomObject]@{
+            ContextName = "local-docker-desktop-linux"
+            Endpoint = "npipe:////./pipe/dockerDesktopLinuxEngine"
+        },
+        [PSCustomObject]@{
+            ContextName = "local-docker-engine"
+            Endpoint = "npipe:////./pipe/docker_engine"
+        }
     )
-    $endpointOutput = @($endpointResult.Output)
-    if ($endpointResult.ExitCode -ne 0 -or $endpointOutput.Count -eq 0) {
-        throw "Unable to inspect the active Docker context; refusing to continue."
+    foreach ($candidate in $candidates) {
+        if (Test-WgDockerEngineReady -Docker $Docker -Endpoint $candidate.Endpoint) {
+            return $candidate
+        }
     }
-    $contextEndpoint = ([string]$endpointOutput[0]).Trim()
-    if (-not (Test-WgLocalDockerEndpoint -Endpoint $contextEndpoint)) {
-        throw "The active Docker context is not a local Windows named-pipe endpoint. Remote Docker operations are blocked."
-    }
-    return [PSCustomObject]@{
-        ContextName = $contextName
-        Endpoint = $contextEndpoint
-    }
+    throw "No trusted local Docker Desktop engine endpoint is ready."
 }
 
 function Test-WgDockerEngineReady {
@@ -1783,6 +1781,14 @@ function Assert-WgComposeOwnership {
 
 function Assert-WgDockerEngine {
     $docker = Get-WgDocker
+    $desktop = Find-WgTrustedDockerDesktopPath
+    if (-not $desktop) {
+        throw "A trusted Docker Desktop launcher was not found."
+    }
+    $desktopProcesses = @(Assert-WgRunningDockerDesktopOwnership -ExpectedPath $desktop)
+    if ($desktopProcesses.Count -eq 0) {
+        throw "Docker Desktop is not running."
+    }
     $target = Get-WgLocalDockerTarget -Docker $docker
     & $docker --host $target.Endpoint version --format "{{.Server.Version}}" *> $null
     if ($LASTEXITCODE -ne 0) {
@@ -1795,6 +1801,44 @@ function Assert-WgDockerEngine {
         throw "The validated Docker Desktop Compose plugin is unavailable. Update or repair Docker Desktop."
     }
     return $docker
+}
+
+function Start-WgDockerDesktopEngine {
+    param([ValidateRange(30, 600)][int]$TimeoutSeconds = 180)
+
+    $desktop = Find-WgTrustedDockerDesktopPath
+    if (-not $desktop) {
+        throw "A trusted Docker Desktop launcher was not found."
+    }
+    $docker = Get-WgDocker
+    $desktopProcesses = @(Assert-WgRunningDockerDesktopOwnership -ExpectedPath $desktop)
+    if ($desktopProcesses.Count -eq 0) {
+        Start-Process -FilePath $desktop -WindowStyle Hidden
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            $target = Get-WgLocalDockerTarget -Docker $docker
+            $confirmedProcesses = @(
+                Assert-WgRunningDockerDesktopOwnership -ExpectedPath $desktop
+            )
+            if ($confirmedProcesses.Count -eq 0) {
+                throw "The trusted Docker Desktop process exited before its engine became ready."
+            }
+            return $target
+        }
+        catch {
+            if (
+                $_.Exception.Message -notmatch "^No trusted local Docker Desktop engine endpoint is ready" -and
+                $_.Exception.Message -notmatch "^The trusted Docker Desktop process exited"
+            ) {
+                throw
+            }
+        }
+        if ((Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+    } while ((Get-Date) -lt $deadline)
+    throw "Docker Desktop did not expose a trusted local Linux engine within $TimeoutSeconds seconds."
 }
 
 function Get-WgPython {
