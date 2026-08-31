@@ -3,16 +3,18 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+if TYPE_CHECKING:
+    from alembic.config import Config
 
 ROOT = Path(__file__).resolve().parents[1]
 API_ROOT = ROOT / "apps" / "api"
 
 
 def _config() -> Config:
+    from alembic.config import Config
+
     config = Config(str(API_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(API_ROOT / "alembic"))
     return config
@@ -29,6 +31,9 @@ def _prepare_environment(database_url: str) -> None:
 
 
 def main() -> None:
+    from alembic import command
+    from sqlalchemy import create_engine, inspect
+
     with tempfile.TemporaryDirectory(prefix="whaleguard-migration-") as directory:
         database = Path(directory) / "migration.db"
         database_url = f"sqlite:///{database.as_posix()}"
