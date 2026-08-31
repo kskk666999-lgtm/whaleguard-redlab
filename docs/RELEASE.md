@@ -1,26 +1,23 @@
 # WhaleGuard 发布手册
 
-本文定义 WhaleGuard AI RedLab 的发布门禁、证据和 GitHub Release 操作。它不是“建议测试列表”：任何阻断项未通过时，版本状态都必须保持 **NOT READY TO TAG**。
+本文定义 WhaleGuard AI RedLab 的发布门禁、证据和 GitHub Release 操作。它不是“建议测试列表”：任何阻断项未通过时，都不得创建或发布对应版本 tag。
 
-## 当前发布状态
+## 发布状态与证据来源
 
-| 项目 | 状态 |
+| 项目 | 说明 |
 | --- | --- |
-| 稳定基线 | `v0.1.0`（annotated tag） |
-| 基线提交 | `6438ff2975eabe3059297ba1fb0d0728b9d78464` |
-| 开发版本 | `v0.1.1 Hardening` |
-| v0.1.1 tag | **不得创建，等待远端 CI 与正式发布门禁通过** |
-| 当前发布结论 | **NOT READY TO TAG** |
+| 稳定基线 | `v0.1.0`（annotated tag，commit `6438ff2975eabe3059297ba1fb0d0728b9d78464`） |
+| 本手册适用版本 | `v0.1.1 Hardening` |
+| 发布身份 | 以 annotated tag `v0.1.1^{}` 解引用后的完整 commit 为唯一身份 |
+| 最终证据 | 以 GitHub `v0.1.1` Release 正文列出的 Actions runs、候选附件和发布后回读结果为准 |
 
-2026-08-31 已在同一个干净 v0.1.1 候选上完成本机可执行门禁：257 项 Python 测试、前端构建与两条 Playwright lane、12 步 Docker 产品 smoke、schema v2 的 `restart` / `down-up` 精确持久化、三 Worker 故障恢复、Windows 原生旧 Redis 卷升级、pip/npm 审计、源码与八镜像 Syft/Trivy，以及本地无签名候选包和独立 SHA-256 复核。精确 commit 由 `.local/docker-resilience-report.json`、`artifacts/release-*/release-metadata.json` 和 `sbom-manifest.json` 共同记录；这些 ignored 本地证据不替代远端 Actions run。
+本手册定义阻断式发布门禁，不作为随分支更新的实时状态页。只有下述门禁在同一个冻结候选 commit 上全部通过、Release 正文已在仓库外填妥并完成占位符与附件校验后，维护者才可创建 annotated `v0.1.1` tag；tag 创建后不得移动或覆盖。
 
-截至 2026-08-31，官方公开仓库已确认为 [`kskk666999-lgtm/whaleguard-redlab`](https://github.com/kskk666999-lgtm/whaleguard-redlab)，本 checkout 的 `origin` 指向该仓库。GitHub Actions、候选附件工作流和 Release 正文仍必须使用实际远端结果回读验证，不得仅凭本地绿色结果勾选。
-
-当前明确阻断项只剩远端发布链路：PR/目标分支 GitHub Actions、手工 `Build Release Candidate Artifacts`、Release 正文与发布后回读尚未形成可核验的完整证据。因此当前结论仍为 **NOT READY TO TAG**，不得用本地绿色结果创建 `v0.1.1` tag。
+官方公开仓库为 [`kskk666999-lgtm/whaleguard-redlab`](https://github.com/kskk666999-lgtm/whaleguard-redlab)。精确 commit、run URL、测试计数、扫描摘要和附件 SHA-256 不写入本手册，统一记录在正式 Release 正文，避免证据更新反过来改变待验收 commit。
 
 ## v0.1.1 阻断式 Checklist
 
-以下清单是唯一的 ready 判定。结果、日志、报告和哈希必须来自准备打 tag 的同一个 commit；不能继承 v0.1.0 或更早提交的测试数字。
+以下条目共同构成唯一 ready 判定；复选框记录已经固化的本版条件，标为“门禁”的发布时证据不在 Git 中维护实时状态，最终以正式 Release 正文为准。所有结果、日志、报告和哈希必须来自准备打 tag 的同一个 commit；不能继承 v0.1.0 或更早提交的测试数字。
 
 ### 1. 版本与变更范围
 
@@ -67,7 +64,7 @@
 
 ### 4. CI 与安全供应链
 
-- [ ] PR 和目标分支上的 GitHub Actions 均为绿色；本地 workflow 文件存在不算 CI 已通过。
+- **远端 CI 门禁：** 发布前必须确认 release PR 与稳定分支的 `CI` 和 `Supply Chain Security` workflow 均为绿色，并把 run URL 与 head SHA 写入 Release 正文。
 - [x] Workflow 使用最小权限、合理超时，来自 fork 的 PR 默认拿不到 secrets。
 - [x] Python `pip-audit` 完整报告已保留且无运行/报告错误；Python High/Critical 由 Trivy filesystem vulnerability gate 统一阻断，npm 继续以 `audit-level=high` 阻断。
 - [x] Dependency Review 与 secret scan 兼容检查已完成。
@@ -75,7 +72,7 @@
 - [x] Trivy 文件系统和容器镜像扫描完成；Critical/High 为零，或每条例外都有负责人、理由、影响和到期日。
 - [x] Windows 最终镜像 SBOM/Trivy 扫描为 `generate_sbom.py` 与 `scan_compose_images.py` 同时显式传入 `--docker`、`--docker-host`、`--docker-config` 和 `--require-running-match`；两个 `compose-image-inventory.json` 的 CLI、endpoint、config、Compose plugin 路径及 SHA-256 与同一候选 commit 的 `docker-resilience-report.json` 完全一致。Linux/CI 可以使用默认本地 Engine，但仍必须验证运行容器与所扫不可变 image ID 一致。
 - [x] Medium/Low 保留在报告中，没有通过关闭扫描隐藏。
-- [ ] 手工触发的 `Build Release Candidate Artifacts` 成功，`release-metadata.json` 中的 commit 与候选 SHA 完全一致。
+- **候选附件门禁：** 发布前必须在稳定分支候选提交上成功运行 `Build Release Candidate Artifacts`，并确认 `release-metadata.json.commit` 与 `sbom-manifest.json.source_git_commit` 等于候选完整 SHA。
 - [x] Release 附件已生成 `SHA256SUMS`，并在独立命令中复核。
 
 ### 5. 文档、演示与截图
@@ -87,7 +84,7 @@
 - [x] Finding 详情真实截图已捕获并脱敏。
 - [x] HTML 报告预览真实截图已捕获并脱敏。
 - [x] [5 分钟演示](DEMO_GUIDE.md)、[架构图](ARCHITECTURE.md)、README 和截图清单与最终版本一致。
-- [ ] GitHub Release 正文已从 [Release 模板](../.github/RELEASE_TEMPLATE.md) 填写，所有占位符均已替换。
+- **Release 正文门禁：** 发布前必须将 [Release 模板](../.github/RELEASE_TEMPLATE.md) 复制到仓库外填妥，移除全部 HTML 注释、`REQUIRED` 和 `TODO` 占位符，并核对同一候选的 SHA、run URL、测试结论和附件哈希。
 
 固定文件名、尺寸、SHA-256 和捕获要求见 [截图资产清单](screenshots/README.md)。不要提交设计稿、AI 生成图或空白占位图冒充实测界面。
 
@@ -145,7 +142,7 @@ git remote -v
 
 ### B. 生成并核对校验文件
 
-在候选 commit 上手工触发 GitHub Actions `Build Release Candidate Artifacts`，输入 `v0.1.1`。该 workflow 只生成无签名候选附件，不创建 tag、GitHub Release 或任何发布状态。下载 `whaleguard-v0.1.1-release-candidate` 后，先核对 `release-metadata.json` 的 commit 和附件清单。
+候选 commit 位于稳定分支后，在该分支手工触发 GitHub Actions `Build Release Candidate Artifacts`，输入 `v0.1.1`。运行详情的 head SHA、`release-metadata.json.commit` 与 `sbom-manifest.json.source_git_commit` 必须全部等于候选 SHA。该 workflow 只生成无签名候选附件，不创建 tag、GitHub Release 或任何发布状态。
 
 本地等价的源码打包与校验入口：
 
@@ -184,7 +181,7 @@ git rev-parse 'v0.1.1^{}'
 
 ### D. 发布与回读
 
-1. 从 `.github/RELEASE_TEMPLATE.md` 填写 Release 正文，删除所有注释占位符。
+1. 将 `.github/RELEASE_TEMPLATE.md` 复制到被 Git 忽略的 `.local/release-body-v0.1.1.md`，在副本中填写并删除全部注释占位符；不得修改已冻结 commit 中的模板，填写后 `git status --short` 仍须为空。
 2. 使用 GitHub 的 annotated tag 创建 Release，上传 SBOM、扫描摘要和 `SHA256SUMS`。
 3. 下载已发布附件，重新核对 SHA-256。
 4. 从未登录窗口检查 README 图片、架构图、Changelog、Release 正文和附件均可访问。
