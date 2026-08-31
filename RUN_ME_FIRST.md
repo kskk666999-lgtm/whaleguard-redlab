@@ -4,7 +4,7 @@
 
 ## 当前验证状态
 
-`v0.1.0` 基线已于 2026-08-31 在当前 Windows 主机完成 Docker 验收：8 个 Compose 服务全部 healthy，API `/ready` 数据库状态为 `ok`，产品 smoke、真实 RQ callback、`restart` 和完整 `down/up` 持久化均已通过。稳定 tag 指向 `a9746d65800e9ff5d590123d589282ecde09c409`。
+`v0.1.0` 基线已于 2026-08-31 在当前 Windows 主机完成 Docker 验收：8 个 Compose 服务全部 healthy，API `/ready` 数据库状态为 `ok`，产品 smoke、真实 RQ callback、`restart` 和完整 `down/up` 持久化均已通过。稳定 tag 指向隐私化公开历史中的 `6438ff2975eabe3059297ba1fb0d0728b9d78464`。
 
 `v0.1.1 Hardening` 正在开发，必须在最终 commit 上重新执行全部 [发布门禁](docs/RELEASE.md)；上述 v0.1.0 结果不能直接继承为新版本证据。
 

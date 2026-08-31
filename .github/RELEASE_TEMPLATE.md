@@ -14,22 +14,21 @@ WhaleGuard AI RedLab 是一个 local-first、可审计的 LLM / Agent / MCP 安�
 - `RunEvent` 成为 SSE 与历史分页的权威来源，支持 cursor/`Last-Event-ID`、递归脱敏和 64 KiB payload 上限；旧 `event_log` 暂时兼容并标记 deprecated。
 - 三条最小权限 GitHub Actions 覆盖 CI、供应链安全和无签名 Release Candidate 附件生成；正式 tag 仍由完整发布门禁控制。
 
-完整变更见 [`CHANGELOG.md`](https://github.com/OWNER/REPOSITORY/blob/v0.1.1/CHANGELOG.md)。
-<!-- REQUIRED: 将 OWNER/REPOSITORY 替换为经维护者确认的官方仓库。 -->
+完整变更见 [`CHANGELOG.md`](https://github.com/kskk666999-lgtm/whaleguard-redlab/blob/v0.1.1/CHANGELOG.md)。
 
 ## 实机界面 / Screenshots
 
-![WhaleGuard Dashboard](https://raw.githubusercontent.com/OWNER/REPOSITORY/v0.1.1/docs/screenshots/dashboard-dark.png)
+![WhaleGuard Dashboard](https://raw.githubusercontent.com/kskk666999-lgtm/whaleguard-redlab/v0.1.1/docs/screenshots/dashboard-dark.png)
 
-![AgentArena private lab](https://raw.githubusercontent.com/OWNER/REPOSITORY/v0.1.1/docs/screenshots/agentarena.png)
+![AgentArena private lab](https://raw.githubusercontent.com/kskk666999-lgtm/whaleguard-redlab/v0.1.1/docs/screenshots/agentarena.png)
 
-![MCPShield Tool metadata](https://raw.githubusercontent.com/OWNER/REPOSITORY/v0.1.1/docs/screenshots/mcpshield.png)
+![MCPShield Tool metadata](https://raw.githubusercontent.com/kskk666999-lgtm/whaleguard-redlab/v0.1.1/docs/screenshots/mcpshield.png)
 
-![Finding detail and evidence](https://raw.githubusercontent.com/OWNER/REPOSITORY/v0.1.1/docs/screenshots/finding-detail.png)
+![Finding detail and evidence](https://raw.githubusercontent.com/kskk666999-lgtm/whaleguard-redlab/v0.1.1/docs/screenshots/finding-detail.png)
 
-![Generated HTML report](https://raw.githubusercontent.com/OWNER/REPOSITORY/v0.1.1/docs/screenshots/report-preview.png)
+![Generated HTML report](https://raw.githubusercontent.com/kskk666999-lgtm/whaleguard-redlab/v0.1.1/docs/screenshots/report-preview.png)
 
-补充画面：[测试运行与 SSE 事件](https://raw.githubusercontent.com/OWNER/REPOSITORY/v0.1.1/docs/screenshots/runs.png)。所有图片的尺寸与 SHA-256 见截图资产清单。
+补充画面：[测试运行与 SSE 事件](https://raw.githubusercontent.com/kskk666999-lgtm/whaleguard-redlab/v0.1.1/docs/screenshots/runs.png)。所有图片的尺寸与 SHA-256 见截图资产清单。
 
 ## 验证结果 / Verification
 
@@ -73,13 +72,13 @@ v0.1.0 Redis 卷的幂等所有权迁移；升级用户不要改回裸 `docker c
 
 启动后访问 <http://127.0.0.1:3000>。随机首次凭据只写入被 Git 忽略的 `.local/first-run-credentials.txt`；不要把该文件上传到 Issue、日志或 Release。
 
-完整步骤见 [`README.md`](https://github.com/OWNER/REPOSITORY/blob/v0.1.1/README.md) 与 [`docs/RELEASE.md`](https://github.com/OWNER/REPOSITORY/blob/v0.1.1/docs/RELEASE.md)。
+完整步骤见 [`README.md`](https://github.com/kskk666999-lgtm/whaleguard-redlab/blob/v0.1.1/README.md) 与 [`docs/RELEASE.md`](https://github.com/kskk666999-lgtm/whaleguard-redlab/blob/v0.1.1/docs/RELEASE.md)。
 
 ## Demo 与架构
 
-- [5 分钟 Demo 流程](https://github.com/OWNER/REPOSITORY/blob/v0.1.1/docs/DEMO_GUIDE.md)
-- [系统架构与安全边界](https://github.com/OWNER/REPOSITORY/blob/v0.1.1/docs/ARCHITECTURE.md)
-- [真实截图资产清单](https://github.com/OWNER/REPOSITORY/blob/v0.1.1/docs/screenshots/README.md)
+- [5 分钟 Demo 流程](https://github.com/kskk666999-lgtm/whaleguard-redlab/blob/v0.1.1/docs/DEMO_GUIDE.md)
+- [系统架构与安全边界](https://github.com/kskk666999-lgtm/whaleguard-redlab/blob/v0.1.1/docs/ARCHITECTURE.md)
+- [真实截图资产清单](https://github.com/kskk666999-lgtm/whaleguard-redlab/blob/v0.1.1/docs/screenshots/README.md)
 
 ## Release 附件 / Assets
 
@@ -109,7 +108,7 @@ GitHub 自动生成的 Source code ZIP/TAR 应解引用到上表中的 Release c
 
 ## 安全使用边界 / Authorized use only
 
-本项目仅用于本地实验、自有系统或获得明确授权的目标。它不提供 C2、WebShell、恶意载荷、凭据窃取、爆破、持久化、免杀、任意 Shell、未授权公网扫描或自动利用。发现安全问题请遵循 [`SECURITY.md`](https://github.com/OWNER/REPOSITORY/blob/v0.1.1/SECURITY.md)，不要在公开 Issue 中披露凭据或可利用细节。
+本项目仅用于本地实验、自有系统或获得明确授权的目标。它不提供 C2、WebShell、恶意载荷、凭据窃取、爆破、持久化、免杀、任意 Shell、未授权公网扫描或自动利用。发现安全问题请遵循 [`SECURITY.md`](https://github.com/kskk666999-lgtm/whaleguard-redlab/blob/v0.1.1/SECURITY.md)，不要在公开 Issue 中披露凭据或可利用细节。
 
 ## 致谢 / Thanks
 

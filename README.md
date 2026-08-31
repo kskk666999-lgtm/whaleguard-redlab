@@ -6,13 +6,13 @@
 
 WhaleGuard 把 LLM/Agent 测试、MCP 元数据风险分析、Scope Guard、证据链、Finding 与多格式报告放在一套可审计的本地平台中。默认中文界面；内置演示目标位于 Docker 私有网络，任何网络测试都必须先经过授权范围与审批策略。
 
-[5 分钟演示](docs/DEMO_GUIDE.md) · [架构说明](docs/ARCHITECTURE.md) · [v0.1.1 发布门禁](docs/RELEASE.md) · [截图资产](docs/screenshots/README.md)
+[GitHub 仓库](https://github.com/kskk666999-lgtm/whaleguard-redlab) · [5 分钟演示](docs/DEMO_GUIDE.md) · [架构说明](docs/ARCHITECTURE.md) · [v0.1.1 发布门禁](docs/RELEASE.md) · [截图资产](docs/screenshots/README.md)
 
 ## 当前状态
 
 | 项目 | 状态 |
 | --- | --- |
-| 稳定基线 | `v0.1.0` → `a9746d65800e9ff5d590123d589282ecde09c409` |
+| 稳定基线 | `v0.1.0` → `6438ff2975eabe3059297ba1fb0d0728b9d78464` |
 | 基线运行证据 | 2026-08-31：Docker 8/8 healthy，API `/ready` 数据库 `ok`，smoke/RQ/restart/down-up 持久化已验证 |
 | 开发版本 | `v0.1.1 Hardening`：可靠性、CI 与安全供应链；**NOT READY TO TAG** |
 | 发布原则 | v0.1.1 必须在最终 commit 上重新跑完全部门禁，不继承 v0.1.0 的测试结果 |

@@ -7,16 +7,16 @@
 | 项目 | 状态 |
 | --- | --- |
 | 稳定基线 | `v0.1.0`（annotated tag） |
-| 基线提交 | `a9746d65800e9ff5d590123d589282ecde09c409` |
+| 基线提交 | `6438ff2975eabe3059297ba1fb0d0728b9d78464` |
 | 开发版本 | `v0.1.1 Hardening` |
 | v0.1.1 tag | **不得创建，等待远端 CI 与正式发布门禁通过** |
 | 当前发布结论 | **NOT READY TO TAG** |
 
 2026-08-31 已在同一个干净 v0.1.1 候选上完成本机可执行门禁：257 项 Python 测试、前端构建与两条 Playwright lane、12 步 Docker 产品 smoke、schema v2 的 `restart` / `down-up` 精确持久化、三 Worker 故障恢复、Windows 原生旧 Redis 卷升级、pip/npm 审计、源码与八镜像 Syft/Trivy，以及本地无签名候选包和独立 SHA-256 复核。精确 commit 由 `.local/docker-resilience-report.json`、`artifacts/release-*/release-metadata.json` 和 `sbom-manifest.json` 共同记录；这些 ignored 本地证据不替代远端 Actions run。
 
-截至 2026-08-31，当前 checkout 尚未配置 Git remote。正式发布前必须由维护者确认官方仓库地址、GitHub Actions 结果和发布权限，并更新本段状态；不得为了填充文档而虚构仓库 URL、CI 徽章或 Release 链接。
+截至 2026-08-31，官方公开仓库已确认为 [`kskk666999-lgtm/whaleguard-redlab`](https://github.com/kskk666999-lgtm/whaleguard-redlab)，本 checkout 的 `origin` 指向该仓库。GitHub Actions、候选附件工作流和 Release 正文仍必须使用实际远端结果回读验证，不得仅凭本地绿色结果勾选。
 
-当前明确阻断项只剩远端发布链路：本 checkout 没有 Git remote，PR/目标分支 GitHub Actions、手工 `Build Release Candidate Artifacts`、Release 正文、权限与发布后回读均没有可核验的远端证据。因此当前结论仍为 **NOT READY TO TAG**，不得用本地绿色结果创建 `v0.1.1` tag。
+当前明确阻断项只剩远端发布链路：PR/目标分支 GitHub Actions、手工 `Build Release Candidate Artifacts`、Release 正文与发布后回读尚未形成可核验的完整证据。因此当前结论仍为 **NOT READY TO TAG**，不得用本地绿色结果创建 `v0.1.1` tag。
 
 ## v0.1.1 阻断式 Checklist
 
