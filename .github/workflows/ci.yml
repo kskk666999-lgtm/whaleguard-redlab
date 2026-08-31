@@ -318,6 +318,8 @@ jobs:
       - name: Generate ephemeral CI configuration
         run: |
           python scripts/bootstrap_env.py
+          # Let the non-root API write a 0600 credential file to the bind-mounted .local directory.
+          printf 'WHALEGUARD_APP_UID=%s\n' "$(id -u)" >> "$GITHUB_ENV"
           project_name="$(python scripts/migrate_redis_volume.py --print-project-name)"
           printf 'WG_COMPOSE_PROJECT=%s\n' "$project_name" >> "$GITHUB_ENV"
 

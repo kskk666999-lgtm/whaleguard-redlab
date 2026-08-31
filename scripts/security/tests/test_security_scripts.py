@@ -608,6 +608,9 @@ def test_workflows_and_exception_policy_are_valid() -> None:
     assert "pytest==$env:PYTEST_VERSION" in windows_commands
     assert "python -m pytest -q scripts/tests/test_windows_scripts.py" in windows_commands
     docker_steps = ci_config["jobs"]["docker-smoke"]["steps"]
+    docker_commands = "\n".join(str(step.get("run", "")) for step in docker_steps)
+    assert "WHALEGUARD_APP_UID=%s\\n" in docker_commands
+    assert '"$(id -u)" >> "$GITHUB_ENV"' in docker_commands
     install_index = next(
         index
         for index, step in enumerate(docker_steps)
