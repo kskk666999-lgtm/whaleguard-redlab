@@ -49,6 +49,45 @@ export function reportCreatePayload(form: { project_id: string; name: string; fo
   return { project_id: form.project_id, name: form.name, formats: [form.format] };
 }
 
+export function websiteScanCreatePayload(form: {
+  project_id?: string;
+  target_url: string;
+  model_channel_id?: string;
+  authorization_confirmed: true;
+  generate_report: true;
+  safety_level: "safe_read_only";
+}) {
+  return {
+    ...(form.project_id ? { project_id: form.project_id } : {}),
+    target_url: form.target_url.trim(),
+    authorization_confirmed: form.authorization_confirmed,
+    ...(form.model_channel_id ? { model_channel_id: form.model_channel_id } : {}),
+    generate_report: form.generate_report,
+    safety_level: form.safety_level,
+  };
+}
+
+export function websiteModelChannelCreatePayload(form: {
+  project_id: string;
+  name: string;
+  provider: "openai-compatible" | "deepseek-compatible" | "glm-compatible" | "qwen-compatible";
+  base_url: string;
+  api_key: string;
+  model: string;
+  authorization_confirmed: true;
+}) {
+  return {
+    ...form,
+    base_url: form.base_url.trim(),
+    api_key: form.api_key,
+    model: form.model.trim(),
+    enabled: true,
+    timeout: 60,
+    max_tokens: 2048,
+    temperature: 0,
+  };
+}
+
 export function runCreatePayload(form: {
   project_id: string;
   suite_id: string;

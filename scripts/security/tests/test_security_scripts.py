@@ -37,6 +37,10 @@ from scripts.security.summarize_dependency_audits import (
 from scripts.security.validate_workflows import WORKFLOW_DIR, _validate_workflow
 
 ROOT = Path(__file__).resolve().parents[3]
+SCANNED_IMAGE_ID = "sha256:" + "a" * 64
+RUNTIME_CONFIG_ID = "sha256:" + "b" * 64
+RUNTIME_MANIFEST_ID = "sha256:" + "c" * 64
+STALE_MANIFEST_ID = "sha256:" + "d" * 64
 
 
 def _literal_string_assignment(path: Path, name: str) -> str:
@@ -265,12 +269,12 @@ def test_compose_inventory_uses_the_launcher_project_and_records_ids(tmp_path: P
     inventory = {
         "api": {
             "reference": f"{project}-api",
-            "image_id": "sha256:current",
+            "image_id": SCANNED_IMAGE_ID,
             "runtime_containers": [
                 {
                     "container_id": "container-api",
                     "configured_reference": f"{project}-api",
-                    "image_id": "sha256:current",
+                    "image_id": SCANNED_IMAGE_ID,
                 }
             ],
         }
@@ -278,9 +282,10 @@ def test_compose_inventory_uses_the_launcher_project_and_records_ids(tmp_path: P
     output = tmp_path / "compose-image-inventory.json"
     write_inventory(output, project, inventory)
     recorded = json.loads(output.read_text(encoding="utf-8"))
+    assert recorded["schema_version"] == 3
     assert recorded["compose_project"] == project
-    assert recorded["services"]["api"]["image_id"] == "sha256:current"
-    assert recorded["services"]["api"]["runtime_containers"][0]["image_id"] == "sha256:current"
+    assert recorded["services"]["api"]["image_id"] == SCANNED_IMAGE_ID
+    assert recorded["services"]["api"]["runtime_containers"][0]["image_id"] == SCANNED_IMAGE_ID
 
 
 def test_compose_inventory_rejects_a_stale_running_image(monkeypatch) -> None:
@@ -293,7 +298,7 @@ def test_compose_inventory_rejects_a_stale_running_image(monkeypatch) -> None:
             [
                 {
                     "Id": "container-api",
-                    "Image": "sha256:stale",
+                    "Image": RUNTIME_CONFIG_ID,
                     "Config": {
                         "Image": f"{project}-api",
                         "Labels": {
@@ -311,7 +316,102 @@ def test_compose_inventory_rejects_a_stale_running_image(monkeypatch) -> None:
             "docker",
             project,
             "api",
-            "sha256:current",
+            SCANNED_IMAGE_ID,
+            require_running_match=True,
+        )
+
+
+def test_compose_inventory_matches_containerd_index_by_platform_manifest(monkeypatch) -> None:
+    project = canonical_project_name(ROOT)
+
+    def fake_capture(arguments: list[str]) -> str:
+        if "ps" in arguments:
+            return "container-api"
+        if "container" in arguments and "inspect" in arguments:
+            return json.dumps(
+                [
+                    {
+                        "Id": "container-api",
+                        "Image": RUNTIME_CONFIG_ID,
+                        "ImageManifestDescriptor": {
+                            "digest": RUNTIME_MANIFEST_ID,
+                            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                            "platform": {"os": "linux", "architecture": "amd64"},
+                        },
+                        "Config": {
+                            "Image": f"{project}-api",
+                            "Labels": {
+                                "com.docker.compose.project": project,
+                                "com.docker.compose.service": "api",
+                            },
+                        },
+                    }
+                ]
+            )
+        if "image" in arguments and "inspect" in arguments:
+            assert arguments[-2:] == ["{{.Id}}", SCANNED_IMAGE_ID]
+            assert arguments[arguments.index("--platform") + 1] == "linux/amd64"
+            return RUNTIME_MANIFEST_ID
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(compose_inventory, "_capture", fake_capture)
+    records = compose_inventory._runtime_containers(
+        "docker",
+        project,
+        "api",
+        SCANNED_IMAGE_ID,
+        require_running_match=True,
+    )
+    assert records == [
+        {
+            "container_id": "container-api",
+            "configured_reference": f"{project}-api",
+            "image_id": RUNTIME_CONFIG_ID,
+            "selected_image_id": SCANNED_IMAGE_ID,
+            "runtime_manifest_digest": RUNTIME_MANIFEST_ID,
+            "platform": "linux/amd64",
+            "match_strategy": "oci_manifest_descriptor",
+        }
+    ]
+
+
+def test_compose_inventory_rejects_wrong_containerd_platform_manifest(monkeypatch) -> None:
+    project = canonical_project_name(ROOT)
+
+    def fake_capture(arguments: list[str]) -> str:
+        if "ps" in arguments:
+            return "container-api"
+        if "container" in arguments and "inspect" in arguments:
+            return json.dumps(
+                [
+                    {
+                        "Id": "container-api",
+                        "Image": RUNTIME_CONFIG_ID,
+                        "ImageManifestDescriptor": {
+                            "digest": STALE_MANIFEST_ID,
+                            "platform": {"os": "linux", "architecture": "amd64"},
+                        },
+                        "Config": {
+                            "Image": f"{project}-api",
+                            "Labels": {
+                                "com.docker.compose.project": project,
+                                "com.docker.compose.service": "api",
+                            },
+                        },
+                    }
+                ]
+            )
+        if "image" in arguments and "inspect" in arguments:
+            return RUNTIME_MANIFEST_ID
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(compose_inventory, "_capture", fake_capture)
+    with pytest.raises(RuntimeError, match="selected for scanning resolves"):
+        compose_inventory._runtime_containers(
+            "docker",
+            project,
+            "api",
+            SCANNED_IMAGE_ID,
             require_running_match=True,
         )
 
@@ -422,7 +522,7 @@ def test_inventory_uses_one_trusted_prefix_for_all_docker_commands(
             "inspect",
             "--format",
         ]:
-            return "sha256:current"
+            return SCANNED_IMAGE_ID
         if "ps" in arguments:
             return "container-api"
         if "container" in arguments and "inspect" in arguments:
@@ -430,7 +530,7 @@ def test_inventory_uses_one_trusted_prefix_for_all_docker_commands(
                 [
                     {
                         "Id": "container-api",
-                        "Image": "sha256:current",
+                        "Image": SCANNED_IMAGE_ID,
                         "Config": {
                             "Image": "whaleguard-redlab-api",
                             "Labels": {
@@ -453,7 +553,7 @@ def test_inventory_uses_one_trusted_prefix_for_all_docker_commands(
         docker_config=str(config.resolve()),
     )
     assert project == "whaleguard-redlab"
-    assert inventory["api"]["image_id"] == "sha256:current"
+    assert inventory["api"]["image_id"] == SCANNED_IMAGE_ID
     assert evidence["controls_explicit"] is True
     assert len(calls) == 4
 

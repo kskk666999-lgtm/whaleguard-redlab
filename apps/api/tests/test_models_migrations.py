@@ -25,6 +25,7 @@ CORE_TABLES = {
     "test_cases",
     "test_runs",
     "test_results",
+    "website_scans",
     "findings",
     "evidence",
     "reports",
@@ -32,6 +33,9 @@ CORE_TABLES = {
     "audit_logs",
     "knowledge_documents",
     "system_settings",
+    "academy_lab_states",
+    "academy_sessions",
+    "academy_progress",
 }
 
 
@@ -42,6 +46,17 @@ def test_core_models_have_uuid_and_timestamps() -> None:
         assert {"id", "created_at", "updated_at"}.issubset(columns.keys()), table_name
     run_columns = Base.metadata.tables["test_runs"].columns
     assert {"evaluation_mode", "judge_model_channel_id"}.issubset(run_columns.keys())
+    assert "preferences" in Base.metadata.tables["users"].columns
+    for table_name in ("findings", "evidence", "reports"):
+        assert "website_scan_id" in Base.metadata.tables[table_name].columns
+    assert {
+        "project_id",
+        "user_id",
+        "scenario_id",
+        "events",
+        "exploit_success",
+        "defense_success",
+    }.issubset(Base.metadata.tables["academy_sessions"].columns.keys())
 
 
 def test_alembic_upgrade_and_downgrade() -> None:
@@ -64,6 +79,20 @@ def test_alembic_upgrade_and_downgrade() -> None:
     assert CORE_TABLES.issubset(set(inspector.get_table_names()))
     run_columns = {item["name"] for item in inspector.get_columns("test_runs")}
     assert {"evaluation_mode", "judge_model_channel_id"}.issubset(run_columns)
+    user_columns = {item["name"] for item in inspector.get_columns("users")}
+    assert "preferences" in user_columns
+    for table_name in ("findings", "evidence", "reports"):
+        columns = {item["name"] for item in inspector.get_columns(table_name)}
+        assert "website_scan_id" in columns
+    academy_session_columns = {item["name"] for item in inspector.get_columns("academy_sessions")}
+    assert {
+        "project_id",
+        "user_id",
+        "scenario_id",
+        "events",
+        "exploit_success",
+        "defense_success",
+    }.issubset(academy_session_columns)
     engine.dispose()
 
     downgrade = subprocess.run(

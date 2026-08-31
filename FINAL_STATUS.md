@@ -1,7 +1,7 @@
 # WhaleGuard AI RedLab 历史验收状态（2026-08-30）
 
 > [!IMPORTANT]
-> 本文件保留 Docker 安装完成前的历史现场记录，不能代表当前版本。v0.1.0 后续已完成 8 服务健康、产品 smoke、真实 RQ callback 与两轮持久化验收；当前入口见 [README](README.md)，v0.1.1 是否可发布只以 [发布门禁](docs/RELEASE.md) 为准。
+> 本文件保留 Docker 安装完成前的历史现场记录，不能代表当前版本。v0.1.0 后续已完成 8 服务健康、产品 smoke、真实 RQ callback 与两轮持久化验收，v0.1.1 也已正式发布；当前入口见 [README](README.md)，后续版本只以[当前发布门禁](docs/RELEASE.md)为准。
 
 更新时间：2026-08-30 06:12 +08:00（Asia/Shanghai）
 

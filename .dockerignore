@@ -9,6 +9,15 @@
 .local/**
 **/.local
 **/.local/**
+**/*.pgdump
+**/*.dump
+**/*.backup
+**/*.bak
+**/*.har
+**/*.trace
+**/*.trace.zip
+**/backups
+**/backups/**
 
 # Local Python environments, caches, coverage, and generated databases.
 .venv

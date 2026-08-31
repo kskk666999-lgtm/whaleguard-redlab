@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { apiRequest, login } from "@/lib/api";
+import {
+  apiRequest,
+  getSystemStatus,
+  getUserPreferences,
+  login,
+  patchUserPreferences,
+} from "@/lib/api";
 import { saveSession } from "@/lib/auth";
 
 describe("API client", () => {
@@ -39,6 +45,27 @@ describe("API client", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "permission denied" }), { status: 403, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     await expect(apiRequest("/settings", { method: "PUT", body: {} })).rejects.toEqual(expect.objectContaining({ status: 403, message: "当前角色没有执行此操作的权限" }));
+  });
+
+  it("通过真实偏好和系统状态端点读取并保存新手体验", async () => {
+    saveSession("access-token", "csrf-token", { username: "admin" });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ experience_mode: "beginner", onboarding_complete: false, onboarding_goal: null }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ experience_mode: "advanced", onboarding_complete: true, onboarding_goal: "both" }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ overall: "ready", checked_at: "2026-09-01T00:00:00Z", services: { api: { status: "normal", label: "API", detail: "本地服务正常", optional: false } }, model_provider_name: null }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getUserPreferences()).resolves.toMatchObject({ experience_mode: "beginner" });
+    await expect(patchUserPreferences({ experience_mode: "advanced", onboarding_complete: true, onboarding_goal: "both" })).resolves.toMatchObject({ experience_mode: "advanced", onboarding_goal: "both" });
+    await expect(getSystemStatus()).resolves.toMatchObject({ overall: "ready", services: { api: { status: "normal" } } });
+
+    expect(fetchMock.mock.calls[0][0]).toContain("/auth/preferences");
+    const patchOptions = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(patchOptions.method).toBe("PATCH");
+    expect(new Headers(patchOptions.headers).get("X-CSRF-Token")).toBe("csrf-token");
+    expect(patchOptions.body).toBe(JSON.stringify({ experience_mode: "advanced", onboarding_complete: true, onboarding_goal: "both" }));
+    expect(fetchMock.mock.calls[2][0]).toContain("/system/status");
   });
 
   it("401 清除本地会话并返回重新登录提示", async () => {

@@ -87,6 +87,45 @@ def test_health_and_capabilities_have_no_shell_or_request_url() -> None:
     assert len(capabilities["tools"]) == 5
 
 
+def test_demo_site_contains_only_fictional_static_content_and_passive_findings() -> None:
+    with TestClient(app) as client:
+        response = client.get("/demo-site")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "LOCAL PASSIVE LAB" in response.text
+    assert "lab-contact@example.invalid" in response.text
+    assert "不包含登录、支付、上传或用户数据" in " ".join(response.text.split())
+
+    # These omissions are intentional fixtures for passive-only rules. Do not
+    # copy this response policy to production endpoints.
+    for header in (
+        "content-security-policy",
+        "strict-transport-security",
+        "x-frame-options",
+        "referrer-policy",
+        "permissions-policy",
+    ):
+        assert header not in response.headers
+
+    cookie = response.headers["set-cookie"].casefold()
+    assert "wg_demo_theme=ocean" in cookie
+    assert "samesite=lax" in cookie
+    assert "secure" not in cookie
+    assert "httponly" not in cookie
+
+
+def test_demo_site_never_reflects_query_input_or_accepts_state_changes() -> None:
+    marker = "query-marker-must-not-be-reflected"
+    with TestClient(app) as client:
+        get_response = client.get("/demo-site", params={"message": marker})
+        post_response = client.post("/demo-site", content=marker)
+
+    assert get_response.status_code == 200
+    assert marker not in get_response.text
+    assert post_response.status_code == 405
+
+
 def test_default_task_reads_knowledge_calls_mcp_and_returns_trace() -> None:
     with TestClient(app) as client:
         response = client.post(
@@ -322,3 +361,112 @@ def test_toolless_mode_is_explicit_and_still_returns_knowledge() -> None:
     assert body["knowledge"]
     assert body["tool_results"] == []
     assert any(event["action"] == "tool_selection_disabled" for event in body["trace"])
+
+
+def test_academy_metadata_declares_all_private_mock_components_and_safety() -> None:
+    with TestClient(app) as client:
+        response = client.get("/academy/metadata")
+    assert response.status_code == 200
+    body = response.json()
+    assert {item["id"] for item in body["components"]} == {
+        "rag",
+        "vector",
+        "mcp",
+        "tools",
+        "enterprise",
+        "identity",
+        "collector",
+        "agent",
+    }
+    assert body["mcp_spec_version"] == "2026-07-28"
+    assert body["data_prefix"] == "WHALE_LAB_FAKE_*"
+    assert body["data_values_exposed"] is False
+    assert body["safety"] == {
+        "public_listener": False,
+        "public_egress": False,
+        "network_performed": False,
+        "arbitrary_shell": False,
+        "request_supplied_target_url": False,
+        "persistence": False,
+    }
+    assert "WHALE_LAB_FAKE_SECRET_" not in response.text
+
+
+def test_academy_components_are_allow_listed_and_never_report_network_activity() -> None:
+    actions = {
+        "rag": "retrieve",
+        "vector": "search",
+        "mcp": "route",
+        "tools": "call",
+        "enterprise": "read",
+        "identity": "issue",
+        "collector": "record",
+        "agent": "plan",
+    }
+    with TestClient(app) as client:
+        for component, action in actions.items():
+            response = client.post(
+                f"/academy/components/{component}/invoke",
+                json={
+                    "scenario_id": "B01",
+                    "action": action,
+                    "payload": {"canary": "WHALE_LAB_FAKE_TEST_ONLY"},
+                },
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["component"] == component
+            assert body["network_performed"] is False
+            assert body["public_egress"] is False
+
+        wrong_action = client.post(
+            "/academy/components/rag/invoke",
+            json={"scenario_id": "B01", "action": "call", "payload": {}},
+        )
+        unknown = client.post(
+            "/academy/components/shell/invoke",
+            json={"scenario_id": "B01", "action": "run", "payload": {}},
+        )
+    assert wrong_action.status_code == 422
+    assert unknown.status_code == 404
+
+
+def test_academy_fake_values_are_dynamic_and_collector_rejects_non_academy_data() -> None:
+    first_app = agent_main.create_app()
+    second_app = agent_main.create_app()
+    request = {"scenario_id": "A16", "action": "read", "payload": {}}
+    with TestClient(first_app) as first, TestClient(second_app) as second:
+        first_record = first.post("/academy/components/enterprise/invoke", json=request).json()
+        second_record = second.post("/academy/components/enterprise/invoke", json=request).json()
+        rejected = first.post(
+            "/academy/components/collector/invoke",
+            json={
+                "scenario_id": "I11",
+                "action": "record",
+                "payload": {"canary": "not-an-academy-value"},
+            },
+        ).json()
+    first_secret = first_record["result"]["record"]["secret"]
+    second_secret = second_record["result"]["record"]["secret"]
+    assert first_secret.startswith("WHALE_LAB_FAKE_SECRET_")
+    assert second_secret.startswith("WHALE_LAB_FAKE_SECRET_")
+    assert first_secret != second_secret
+    assert rejected["result"]["accepted"] is False
+    assert rejected["result"]["stored"] is None
+    assert rejected["result"]["network_performed"] is False
+
+
+def test_academy_mock_rejects_suspected_real_credentials_without_echoing_them() -> None:
+    credential = "ghp_" + ("A" * 36)
+    with TestClient(app) as client:
+        response = client.post(
+            "/academy/components/tools/invoke",
+            json={
+                "scenario_id": "B04",
+                "action": "call",
+                "payload": {"token": credential},
+            },
+        )
+    assert response.status_code == 422
+    assert credential not in response.text
+    assert "WHALE_LAB_FAKE_" in response.text

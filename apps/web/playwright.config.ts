@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const baseURL = process.env.PLAYWRIGHT_BASE_URL || "http://127.0.0.1:3000";
+const webServerCommand = process.env.PLAYWRIGHT_WEB_SERVER_COMMAND || "npm run dev";
+
 export default defineConfig({
   testDir: "./e2e",
   testIgnore: ["**/real-stack.spec.ts"],
@@ -9,14 +12,14 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
   },
   webServer: {
-    command: "npm run dev",
-    url: "http://127.0.0.1:3000/login",
+    command: webServerCommand,
+    url: `${baseURL}/login`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

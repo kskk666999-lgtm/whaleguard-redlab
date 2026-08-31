@@ -1,35 +1,43 @@
 # WhaleGuard AI RedLab
 
-> 鲸盾 AI 安全红队实验平台 — 面向本地实验环境、自有系统和获得明确授权目标的开源 AI 安全评估工作台。
+> **Learn AI Security · Check Your Own AI App · Local-first · Safe by Default**
 
-**Local-first, auditable LLM / Agent / MCP security evaluation workbench.**
+鲸盾 AI 安全红队实验平台面向本地实验环境、自有系统和获得明确授权的目标。第一次打开不需要理解 Project、Scope、Run、Finding 或 Docker：直接开始第一课，或者对自己的网站做安全只读体检。
 
-WhaleGuard 把 LLM/Agent 测试、MCP 元数据风险分析、Scope Guard、证据链、Finding 与多格式报告放在一套可审计的本地平台中。默认中文界面；内置演示目标位于 Docker 私有网络，任何网络测试都必须先经过授权范围与审批策略。
+学习内置 Academy 不需要 API Key、云服务器、Kali、Burp、Python 或 Node。切换到高级模式后，完整的 LLM/Agent 测试、MCPShield、Scope Guard、证据链、Finding、报告、RBAC、队列与审计能力仍然保留。
 
-[GitHub 仓库](https://github.com/kskk666999-lgtm/whaleguard-redlab) · [5 分钟演示](docs/DEMO_GUIDE.md) · [架构说明](docs/ARCHITECTURE.md) · [v0.1.1 发布门禁](docs/RELEASE.md) · [截图资产](docs/screenshots/README.md)
+[GitHub 仓库](https://github.com/kskk666999-lgtm/whaleguard-redlab) · [Academy](docs/ACADEMY_RANGE.md) · [网站安全体检](docs/WEBSITE_SCAN_QUICKSTART.md) · [DeepSeek 可选增强](docs/DEEPSEEK.md) · [新手第一次运行](RUN_ME_FIRST.md) · [架构说明](docs/ARCHITECTURE.md) · [发布门禁](docs/RELEASE.md) · [截图资产](docs/screenshots/README.md)
 
 ## 当前状态
 
 | 项目 | 状态 |
 | --- | --- |
-| 稳定基线 | `v0.1.0` → `6438ff2975eabe3059297ba1fb0d0728b9d78464` |
-| 基线运行证据 | 2026-08-31：Docker 8/8 healthy，API `/ready` 数据库 `ok`，smoke/RQ/restart/down-up 持久化已验证 |
-| 开发版本 | `v0.1.1 Hardening`：可靠性、CI 与安全供应链；**NOT READY TO TAG** |
-| 发布原则 | v0.1.1 必须在最终 commit 上重新跑完全部门禁，不继承 v0.1.0 的测试结果 |
+| 最新正式版本 | [`v0.2.0 Beginner Experience / Academy`](https://github.com/kskk666999-lgtm/whaleguard-redlab/releases/tag/v0.2.0)（2026-09-01） |
+| 上一稳定基线 | `v0.1.1 Hardening` → `dbbbd000067b4c161d6ff9029882c77a226d8101`（2026-08-31） |
+| 已验证运行状态 | Docker 8/8 healthy，API `/ready` 数据库 `ok`；完整回归、真实 RQ、17 关 V/H、网站体检、restart 与 down/up 持久化均通过 |
+| 发布原则 | 只把 annotated tag 指向、CI、供应链扫描、附件回读均通过的版本称为正式 Release |
 
 下面是本地演示环境的真实 Dashboard，不是设计稿。点击可查看原图。
 
 <a href="docs/screenshots/dashboard-dark.png"><img src="docs/screenshots/dashboard-dark.png" alt="WhaleGuard 系统总览真实截图" width="900"></a>
 
-## 最短启动
+## 新手 Quick Start
 
-Windows 11 已安装并启动 Docker Desktop：
+### Windows 11
+
+1. Docker Desktop 已安装时，双击：
 
 ```powershell
 .\START_WHALEGUARD.bat
 ```
 
-Linux / WSL2：
+2. 脚本会按需安全启动 Docker、恢复 WhaleGuard 并打开浏览器。
+3. 从 `.local\first-run-credentials.txt` 获取随机管理员密码并登录。
+4. 首页点击 **开始第一课**。只学习内置 Academy 时不需要配置 API Key。
+
+若尚未安装 Docker Desktop，先双击 `INSTALL_WHALEGUARD_DOCKER.bat`，安装器会完成兼容检查和安全安装；不会默认配置开机自启动。
+
+### Linux / WSL2
 
 ```bash
 make docker-up
@@ -81,12 +89,18 @@ Linux/WSL 用户若 `id -u` 或 `id -g` 不是 `1000`，应在生成 `.env` 后�
 
 ## 主要能力
 
+- 默认新手模式只显示首页、Academy、网站体检、Findings、报告和帮助；用户偏好保存在账号中。高级模式完整保留原有安全工作台。
+- WhaleGuard Academy 提供 10 个 3～5 分钟中文微课程与 17 个 LLM/RAG/Agent/MCP 实验；每关使用“学 → 猜 → 做 → 看 → 修 → 再测 → 总结”，并提供三级 Hint、主动完整解法、Attack Story、Vulnerable/Hardened 对照、受限鲸鱼导师、知识回顾、技能进度和下一课。
+- 17 个实验独立映射到 OWASP GenAI LLM Top 10 2026 与 OWASP Top 10 for Agentic Applications 2026；不相关风险不会强行贴标签。
+- Academy 的 Agent、RAG、MCP、Identity、Collector、Canary 与企业数据均为本项目私网中的虚构训练数据，不接受真实目标 URL，也不执行公网请求。
+- “网站安全体检”只需输入网址、确认授权、选择安全只读级别并开始；后台自动建立隔离 Project、精确临时 Scope、Finding、Evidence 和 Report。真实模型是可选增强，解析失败不影响确定性结果，还可只重试 AI 解读而不重新访问目标。
 - 项目、授权 Scope、模型渠道、Agent、测试集、运行、Finding、证据、报告、知识库与审计统一管理。
 - 15 种安全公开测试模板；确定性规则评分优先，可选 LLM Judge。
 - OpenAI-compatible 模型渠道，适配 OpenAI / DeepSeek / GLM / Qwen / Ollama 协议；密钥加密保存且 API 永不回传明文。
 - MCPShield 仅导入配置和 Tool 元数据，识别描述投毒、命令/网络/文件/环境变量权限及缺少审批，不自动执行未知 Tool。
 - AgentArena 提供 mock-llm、mock-agent、mock-mcp-server；敏感演示工具默认拒绝或等待审批。
-- Scope Guard 检查协议、目标、解析 IP、Scope、授权到期、请求类型、Tool 风险与人工审批；逐跳复检重定向并阻止混合 DNS 解析绕过。
+- 本地网站被动体检靶页复用 `mock-agent`，容器内目标为 `http://mock-agent:8102/demo-site`；它只含虚构静态数据和刻意缺失的浏览器安全加固，不新增宿主端口或第九个服务。详见[靶页说明](docs/MOCK_WEBSITE_LAB.md)。
+- Scope Guard 对公网、loopback 和私网目标一律要求当前项目内的显式精确授权，检查协议、目标、解析 IP、Scope、授权到期、请求类型、Tool 风险与人工审批；逐跳复检重定向并阻止混合 DNS 解析绕过。
 - TestRun 支持队列状态、暂停、取消、失败重试和进度；事务型 Outbox、稳定 `delivery_id` 与数据库 receipt 负责幂等回调。
 - 规范化 RunEvent 提供 SSE cursor、`Last-Event-ID` 与分页历史；事件递归脱敏并限制 payload 大小。证据记录 SHA-256 哈希。
 - HTML、Markdown、JSON 报告；RBAC 角色为 Admin、Security Engineer、Reviewer、Viewer。
@@ -140,9 +154,13 @@ make verify       # 完整静态、测试、构建、Playwright 与 Compose 配�
 - [架构说明](docs/ARCHITECTURE.md)
 - [安全模型与 Scope Guard](docs/SECURITY_MODEL.md)
 - [API 使用](docs/API.md)
+- [Academy Range：17 关、边界与第一关](docs/ACADEMY_RANGE.md)
+- [网站一键体检最简说明](docs/WEBSITE_SCAN_QUICKSTART.md)
+- [DeepSeek 连接与 AI 解读](docs/DEEPSEEK.md)
 - [开发与测试](docs/DEVELOPMENT.md)
 - [演示指南](docs/DEMO_GUIDE.md)
-- [发布手册与 v0.1.1 Checklist](docs/RELEASE.md)
+- [本地网站被动体检靶页](docs/MOCK_WEBSITE_LAB.md)
+- [发布手册与 v0.2.0 Checklist](docs/RELEASE.md)
 - [实机截图资产清单](docs/screenshots/README.md)
 - [故障排查](docs/TROUBLESHOOTING.md)
 - [GitHub 示例报告](docs/examples/whaleguard-demo-report.md)
@@ -176,7 +194,7 @@ v0.1.1 的公开截图矩阵：
 
 ## 参与贡献
 
-欢迎提交聚焦、可验证的修复。请先阅读 [CONTRIBUTING](CONTRIBUTING.md) 与 [SECURITY](SECURITY.md)，在 PR 中如实填写实际测试、未运行项和安全边界。v0.1.1 只接收可靠性、CI、安全供应链和必要文档；真实大模型与动态 Agent/MCP Benchmark 属于后续版本。
+欢迎提交聚焦、可验证的修复。请先阅读 [CONTRIBUTING](CONTRIBUTING.md) 与 [SECURITY](SECURITY.md)，在 PR 中如实填写实际测试、未运行项和安全边界。任何新手体验都不得绕过 Scope Guard、RBAC、审批或审计。
 
 ## 许可证
 

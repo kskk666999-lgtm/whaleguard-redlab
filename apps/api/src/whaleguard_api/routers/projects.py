@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ipaddress
 from datetime import UTC, datetime
-from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -20,6 +19,7 @@ from ..schemas import (
     ScopeResponse,
     ScopeUpdate,
 )
+from ..scope_authorization import normalize_exact_url
 from .common import apply_updates, get_or_404, paginate
 
 router = APIRouter(tags=["项目与授权范围"])
@@ -33,12 +33,7 @@ def _validate_scope(target_type: str, target_value: str) -> str:
         if target_type == "cidr":
             return str(ipaddress.ip_network(value, strict=False))
         if target_type == "url":
-            parsed = urlsplit(value)
-            if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
-                raise ValueError
-            if parsed.username or parsed.password:
-                raise ValueError
-            return value
+            return normalize_exact_url(value)
         if target_type == "domain":
             domain = value.lower().rstrip(".")
             candidate = domain[2:] if domain.startswith("*.") else domain

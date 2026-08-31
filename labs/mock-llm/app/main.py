@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SERVICE_NAME = "whaleguard-mock-llm"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.2.0"
 MODEL_ID = "whaleguard-safe-mock-1"
 MAX_CONTENT_CHARS = 8_000
 

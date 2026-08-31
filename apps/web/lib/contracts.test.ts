@@ -1,5 +1,5 @@
-import { agentCreatePayload, mcpImportPayload, mcpServerCreatePayload, reportCreatePayload, runCreatePayload, scopeCreatePayload, testCaseCreatePayload } from "@/lib/contracts";
-import { modelChannelInputSchema, runInputSchema, scopeInputSchema } from "@/lib/schemas";
+import { agentCreatePayload, mcpImportPayload, mcpServerCreatePayload, reportCreatePayload, runCreatePayload, scopeCreatePayload, testCaseCreatePayload, websiteModelChannelCreatePayload, websiteScanCreatePayload } from "@/lib/contracts";
+import { modelChannelInputSchema, runInputSchema, scopeInputSchema, websiteModelSetupSchema, websiteScanInputSchema } from "@/lib/schemas";
 
 const uuid = "11111111-1111-4111-8111-111111111111";
 
@@ -49,5 +49,24 @@ describe("API contract payloads", () => {
     const modelPayload = runCreatePayload({ ...shared, target_type: "model" });
     expect(modelPayload).toMatchObject({ target_type: "model", model_channel_id: uuid });
     expect(modelPayload).not.toHaveProperty("agent_target_id");
+  });
+
+  it("网站体检只接受 HTTP(S)、安全只读级别与明确授权，模型为可选增强", () => {
+    const modelId = "22222222-2222-4222-8222-222222222222";
+    const form = { target_url: "http://mock-agent:8102/demo-site", model_channel_id: modelId, authorization_confirmed: true as const, generate_report: true as const, safety_level: "safe_read_only" as const };
+    expect(websiteScanInputSchema.safeParse(form).success).toBe(true);
+    expect(websiteScanCreatePayload(form)).toEqual(form);
+    expect(websiteScanInputSchema.safeParse({ ...form, model_channel_id: "" }).success).toBe(true);
+    expect(websiteScanCreatePayload({ ...form, model_channel_id: undefined })).not.toHaveProperty("model_channel_id");
+    expect(websiteScanInputSchema.safeParse({ ...form, target_url: "file:///etc/passwd" }).success).toBe(false);
+    expect(websiteScanInputSchema.safeParse({ ...form, target_url: "https://user:secret@example.test" }).success).toBe(false);
+    expect(websiteScanInputSchema.safeParse({ ...form, authorization_confirmed: false }).success).toBe(false);
+  });
+
+  it("极简接入真实 AI 会带项目授权确认和安全默认值", () => {
+    const form = { project_id: uuid, name: "我的 OpenAI", provider: "openai-compatible" as const, base_url: "https://api.openai.com/v1", api_key: "sk-test-only", model: "gpt-4o-mini", authorization_confirmed: true as const };
+    expect(websiteModelSetupSchema.safeParse(form).success).toBe(true);
+    expect(websiteModelChannelCreatePayload(form)).toEqual({ ...form, enabled: true, timeout: 60, max_tokens: 2048, temperature: 0 });
+    expect(websiteModelSetupSchema.safeParse({ ...form, api_key: "" }).success).toBe(false);
   });
 });

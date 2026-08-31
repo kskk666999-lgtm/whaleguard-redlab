@@ -1,6 +1,6 @@
 [project]
 name = "whaleguard-mock-mcp-server"
-version = "0.1.1"
+version = "0.2.0"
 description = "Five safe MCP fixture tools for WhaleGuard AgentArena"
 requires-python = ">=3.11"
 dependencies = [

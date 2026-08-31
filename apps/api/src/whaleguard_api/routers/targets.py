@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import httpx
@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import or_, select
 
 from ..audit import write_audit
-from ..dependencies import DB, require_permissions
+from ..dependencies import DB, require_permissions, user_permissions
 from ..mcp_analyzer import analyze_server, analyze_tool
 from ..models import AgentTarget, MCPServer, MCPTool, ModelChannel, Project, User
 from ..schemas import (
@@ -28,6 +28,7 @@ from ..schemas import (
     ModelChannelUpdate,
     Page,
 )
+from ..scope_authorization import ensure_temporary_exact_url_scope
 from ..scope_guard import ScopeDenied, guarded_request
 from ..security import (
     decrypt_json,
@@ -97,7 +98,15 @@ def create_channel(
 ) -> ModelChannelResponse:
     if payload.project_id:
         get_or_404(db, Project, payload.project_id, "项目不存在")
-    values = payload.model_dump(exclude={"api_key", "extra_headers"})
+    if payload.authorization_confirmed and payload.project_id is None:
+        raise HTTPException(status_code=422, detail="确认公网模型连接时必须关联一个项目")
+    if (
+        payload.authorization_confirmed
+        and not user.is_superuser
+        and "scopes.write" not in user_permissions(user)
+    ):
+        raise HTTPException(status_code=403, detail="确认模型连接授权需要管理 Scope 的权限")
+    values = payload.model_dump(exclude={"api_key", "extra_headers", "authorization_confirmed"})
     values["base_url"] = str(payload.base_url).rstrip("/")
     channel = ModelChannel(
         **values,
@@ -106,6 +115,38 @@ def create_channel(
     )
     db.add(channel)
     db.flush()
+    if payload.authorization_confirmed and payload.project_id:
+        endpoint_scopes = (
+            ("模型列表", f"{channel.base_url.rstrip('/')}/models"),
+            ("模型推理", f"{channel.base_url.rstrip('/')}/chat/completions"),
+        )
+        for purpose, endpoint_url in endpoint_scopes:
+            scope, created = ensure_temporary_exact_url_scope(
+                db,
+                project_id=payload.project_id,
+                target_url=endpoint_url,
+                actor=user,
+                name=f"{purpose}授权：{channel.name}",
+                notes=(
+                    "由用户在创建模型渠道时明确确认；"
+                    f"仅用于精确端点 {endpoint_url}，30 天后自动到期。"
+                ),
+                lifetime=timedelta(days=30),
+            )
+            write_audit(
+                db,
+                request,
+                "model_channel.scope_confirmed",
+                "authorization_scope",
+                scope.id,
+                user,
+                details={
+                    "model_channel_id": str(channel.id),
+                    "endpoint_url": endpoint_url,
+                    "expires_at": scope.expires_at.isoformat() if scope.expires_at else None,
+                    "created": created,
+                },
+            )
     write_audit(
         db,
         request,
@@ -187,21 +228,37 @@ def test_channel_connection(
             target_url,
             channel.project_id,
             headers=headers,
-            timeout=channel.timeout,
+            timeout=min(channel.timeout, 60),
+            max_redirects=0,
             request_id=getattr(request.state, "request_id", None),
+            max_response_bytes=1024 * 1024,
         )
         latency_ms = round((time.perf_counter() - started) * 1000)
-        success = response.status_code < 500
+        success = 200 <= response.status_code < 300
+        if success:
+            message = "连接成功，API Key 与模型列表端点可用"
+        elif response.status_code in {401, 403}:
+            message = "连接到服务，但 API Key 无效或没有访问权限"
+        elif response.status_code == 404:
+            message = "连接到服务，但 /models 端点不兼容；请核对 Base URL"
+        else:
+            message = f"模型服务返回 HTTP {response.status_code}"
         result = ConnectionTestResponse(
             success=success,
-            message="连接成功" if success else "目标服务返回错误",
+            message=message,
             latency_ms=latency_ms,
             status_code=response.status_code,
         )
-    except (ScopeDenied, httpx.HTTPError) as exc:
+    except ScopeDenied:
         result = ConnectionTestResponse(
             success=False,
-            message=f"连接被拒绝或失败：{str(exc)[:300]}",
+            message="连接被 Scope Guard 拒绝；请确认项目授权范围",
+            latency_ms=round((time.perf_counter() - started) * 1000),
+        )
+    except httpx.HTTPError:
+        result = ConnectionTestResponse(
+            success=False,
+            message="模型服务连接失败；请核对地址、网络和服务状态",
             latency_ms=round((time.perf_counter() - started) * 1000),
         )
     write_audit(

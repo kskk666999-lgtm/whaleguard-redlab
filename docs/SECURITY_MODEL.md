@@ -14,10 +14,14 @@
 2. 校验项目、授权状态、到期时间和请求类型。
 3. 解析全部 A/AAAA 记录，将 IPv4-mapped IPv6 归一化为 IPv4。
 4. 任一解析结果不符合授权则整体失败关闭，防止混合 DNS/DNS rebinding 绕过。
-5. 默认只允许 loopback、RFC1918 和 ULA；link-local、组播、保留地址及未授权公网地址失败关闭。公网域名/IP 必须显式添加并确认 `allow_public`。
+5. 所有目标都必须命中当前项目内仍有效、未撤销且与协议、host、端口、路径、query 完全匹配的显式 Scope；loopback、RFC1918 和 ULA 也不例外。link-local、组播、保留地址及未授权公网地址失败关闭；公网域名/IP 还必须显式确认 `allow_public`。
 6. 每一个重定向目标重新执行完整校验并限制跳数。
 7. high/critical Tool 要求人工审批；critical Tool 还可由部署策略永久禁用。
 8. 记录结构化 PolicyDecision，不记录凭据和完整敏感内容。
+
+网站体检向导创建的是 24 小时有效的精确 URL Scope：协议、规范 host、有效端口、原始路径、query 与 fragment 都必须一致。尾斜杠、双斜杠、反斜杠和百分号编码不会被静默合并成同一授权目标。新手模式只隐藏底层对象，不改变以上判定、RBAC 或授权到期时间。
+
+内置 Demo Lab 只在默认管理员拥有、名称与标签都精确匹配的官方演示项目中幂等补齐三个固定私网 URL Scope；已有 Scope 被撤销或禁用时不会自动重新启用。系统健康页另有只读、无请求体、无重定向且响应上限固定的三个精确 `/health` 例外，它们不能被扩展为通用私网放行。
 
 应用必须使用受控 HTTP client，不能绕过 Scope Guard 直接实例化通用客户端。受控客户端把连接固定到已检查的解析地址，并对每次重定向重新判定；生产部署仍建议叠加出口代理/防火墙，形成网络层 deny-by-default 的纵深防御。
 
@@ -28,6 +32,8 @@
 - 模型密钥：Fernet/AES 级别的认证加密，列表和详情只返回掩码。
 - 初始管理员：密码由安全随机数生成，只写入权限受限且被忽略的首次启动凭据文件；日志仅打印文件路径。
 - 日志：Authorization、Cookie、API Key、token-like 值、带认证信息的 URL 和异常内容先脱敏再写入 `.local/logs/`；脚本不读取或记录 `.env` 与首次凭据文件内容。
+
+AI 解读始终是增强层：确定性规则先形成结果，模型输出再经过严格 Schema 验证；它不能修改、删除或覆盖 deterministic Finding。Provider 超时、错误或解析失败只记录脱敏类别，规则结果继续有效。
 
 ## 输入与输出
 
@@ -51,6 +57,8 @@
 - Desktop、CLI 与 Compose 插件必须来自同一个当前用户安装根，并通过 Docker Inc. 签名、产品名和最低版本门禁。
 - Compose 使用隔离、无 BOM 的受管 CLI 配置；高优先级插件目录、`.env`/进程环境中的 `COMPOSE_BAKE` 与 `BUILDX_BAKE_*` 均被拒绝。
 - Compose project name 包含规范仓库根路径的稳定 SHA-256 短后缀，避免不同检出目录复用同名容器、卷或网络；已有容器还必须带有匹配的 Compose working-directory 标签。
+- 旧版本固定项目名只有在 Compose 标签、工作目录、配置文件、完整服务清单和 volume 归属唯一匹配当前仓库时才会被接管；歧义时失败关闭。
+- Docker Desktop 4.88.x 的陈旧零字节 runtime socket 只有在官方进程、受管目录和文件特征全部通过时才会被可恢复改名隔离；脚本不删除 runtime 目录、镜像、容器或 volume。
 - 安装流程不执行全局 `wsl --shutdown`；安装、修复或升级前若发现活动 Docker Desktop、Engine 或容器，会要求显式决策，不会静默中断其他工作负载。
 - UAC 提升阶段使用父进程内存中构造、Parser 校验的 EncodedCommand；高完整性进程只调用真实 System32 的 DISM/WSL，不读取或写入用户可修改的仓库脚本。
 

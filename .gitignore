@@ -1,11 +1,20 @@
 # Secrets and local state
-.env
-.env.*.local
+.env*
 !.env.example
+!**/.env.example
 *.db
 *.sqlite
 *.sqlite3
 *.log
+*.pgdump
+*.dump
+*.backup
+*.bak
+*.har
+*.trace
+*.trace.zip
+backups/
+**/backups/
 uploads/
 reports/generated/
 .local/
@@ -31,6 +40,8 @@ playwright-report/
 test-results/
 playwright-report-real/
 test-results-real/
+playwright-report*/
+test-results*/
 
 # Editors and OS
 .idea/

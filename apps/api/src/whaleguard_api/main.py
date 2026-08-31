@@ -21,7 +21,17 @@ from .middleware import (
     RequestTooLarge,
 )
 from .outbox import dispatch_pending_outbox
-from .routers import admin, auth, findings, projects, targets, testing
+from .routers import (
+    academy,
+    admin,
+    auth,
+    findings,
+    projects,
+    system,
+    targets,
+    testing,
+    website_scans,
+)
 from .schemas import HealthResponse
 from .seed import seed_database
 
@@ -169,10 +179,13 @@ def ready() -> HealthResponse:
 
 for api_router in (
     auth.router,
+    academy.router,
     projects.router,
     targets.router,
     testing.router,
     findings.router,
+    website_scans.router,
+    system.router,
     admin.router,
 ):
     app.include_router(api_router, prefix=settings.api_prefix)

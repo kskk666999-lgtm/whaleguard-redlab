@@ -13,11 +13,15 @@ import {
   BrainCircuit,
   Bug,
   ChevronDown,
+  CircleHelp,
   FileCheck2,
   FileSearch,
   FlaskConical,
   FolderKanban,
   Gauge,
+  Globe2,
+  GraduationCap,
+  Home,
   Library,
   LogOut,
   Menu,
@@ -41,14 +45,17 @@ import { clearSession, getStoredUser, getToken, type SessionUser } from "@/lib/a
 import { cn } from "@/lib/utils";
 import { useApp } from "@/components/providers";
 
-type NavItem = { href: string; label: string; icon: typeof Gauge; group: "工作台" | "评估" | "资产" | "治理" };
+type NavGroup = "开始" | "工作台" | "评估" | "资产" | "治理";
+type NavItem = { href: string; label: string; icon: typeof Gauge; group: NavGroup };
 
 export const navigation: NavItem[] = [
+  { href: "/website-scan", label: "网站一键体检", icon: Globe2, group: "工作台" },
   { href: "/dashboard", label: "系统总览", icon: Gauge, group: "工作台" },
   { href: "/projects", label: "项目中心", icon: FolderKanban, group: "工作台" },
   { href: "/scopes", label: "授权与测试范围", icon: ShieldCheck, group: "工作台" },
   { href: "/runs", label: "测试运行中心", icon: PlayCircle, group: "工作台" },
   { href: "/test-cases", label: "AI 红队测试用例", icon: FlaskConical, group: "评估" },
+  { href: "/academy", label: "Academy Range", icon: GraduationCap, group: "评估" },
   { href: "/mcpshield", label: "MCPShield", icon: Network, group: "评估" },
   { href: "/arena", label: "AgentArena", icon: Blocks, group: "评估" },
   { href: "/findings", label: "Findings", icon: Bug, group: "评估" },
@@ -62,8 +69,17 @@ export const navigation: NavItem[] = [
   { href: "/settings", label: "系统设置", icon: Settings, group: "治理" },
 ];
 
-function Sidebar({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
-  const groups = ["工作台", "评估", "资产", "治理"] as const;
+export const beginnerNavigation: NavItem[] = [
+  { href: "/dashboard", label: "首页", icon: Home, group: "开始" },
+  { href: "/academy", label: "安全学院", icon: GraduationCap, group: "开始" },
+  { href: "/website-scan", label: "网站体检", icon: Globe2, group: "开始" },
+  { href: "/findings", label: "Findings", icon: Bug, group: "开始" },
+  { href: "/reports", label: "报告", icon: FileCheck2, group: "开始" },
+  { href: "/help", label: "帮助", icon: CircleHelp, group: "开始" },
+];
+
+function Sidebar({ pathname, items, onNavigate }: { pathname: string; items: NavItem[]; onNavigate?: () => void }) {
+  const groups = Array.from(new Set(items.map((item) => item.group)));
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-20 items-center border-b px-5"><Brand /></div>
@@ -72,7 +88,7 @@ function Sidebar({ pathname, onNavigate }: { pathname: string; onNavigate?: () =
           <div key={group}>
             <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/70">{group}</p>
             <div className="space-y-0.5">
-              {navigation.filter((item) => item.group === group).map((item) => {
+              {items.filter((item) => item.group === group).map((item) => {
                 const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
                 const Icon = item.icon;
                 return (
@@ -97,10 +113,10 @@ function Sidebar({ pathname, onNavigate }: { pathname: string; onNavigate?: () =
   );
 }
 
-function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+function CommandPalette({ open, items, onOpenChange }: { open: boolean; items: NavItem[]; onOpenChange: (open: boolean) => void }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
-  const matches = navigation.filter((item) => item.label.toLowerCase().includes(query.toLowerCase()));
+  const matches = items.filter((item) => item.label.toLowerCase().includes(query.toLowerCase()));
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="top-[24%] max-w-lg p-0">
@@ -120,11 +136,20 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
 export function ConsoleShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { theme, toggleTheme } = useApp();
+  const {
+    experienceMode,
+    preferencesLoading,
+    preferencesReady,
+    theme,
+    toast,
+    toggleTheme,
+    updatePreferences,
+  } = useApp();
   const [ready, setReady] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
+  const [modeSaving, setModeSaving] = useState(false);
   const [user, setUser] = useState<SessionUser | null>(null);
 
   useEffect(() => {
@@ -148,21 +173,42 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const title = useMemo(() => navigation.find((item) => pathname === item.href)?.label || "WhaleGuard", [pathname]);
+  const activeNavigation = experienceMode === "beginner" ? beginnerNavigation : navigation;
+  const title = useMemo(
+    () => [...beginnerNavigation, ...navigation].find((item) => pathname === item.href || pathname.startsWith(item.href + "/"))?.label || "WhaleGuard",
+    [pathname],
+  );
 
-  if (!ready) {
+  if (!ready || !preferencesReady) {
     return <div className="grid min-h-screen place-items-center bg-background"><div className="flex items-center gap-3 text-sm text-muted-foreground"><Activity className="h-4 w-4 animate-pulse text-primary" />正在建立安全会话…</div></div>;
   }
 
   const logout = () => { clearSession(); router.replace("/login"); };
+  const switchExperienceMode = async () => {
+    const nextMode = experienceMode === "beginner" ? "advanced" : "beginner";
+    setModeSaving(true);
+    try {
+      await updatePreferences({ experience_mode: nextMode });
+      toast({
+        title: nextMode === "beginner" ? "已切换到新手模式" : "已切换到高级模式",
+        description: nextMode === "beginner" ? "导航和首页已简化，所有高级功能仍然保留。" : "已恢复完整控制台导航。",
+        tone: "success",
+      });
+      if (pathname === "/dashboard") router.refresh();
+    } catch (error) {
+      toast({ title: "模式切换失败", description: error instanceof Error ? error.message : "请稍后重试", tone: "error" });
+    } finally {
+      setModeSaving(false);
+    }
+  };
 
   return (
     <div className="min-h-screen">
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 border-r bg-card/85 backdrop-blur-xl lg:block"><Sidebar pathname={pathname} /></aside>
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 border-r bg-card/85 backdrop-blur-xl lg:block"><Sidebar pathname={pathname} items={activeNavigation} /></aside>
       {mobileOpen ? (
         <div className="fixed inset-0 z-50 lg:hidden">
           <button className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm" aria-label="关闭导航" onClick={() => setMobileOpen(false)} />
-          <aside className="absolute inset-y-0 left-0 w-[min(86vw,290px)] border-r bg-card shadow-panel"><button className="focus-ring absolute right-3 top-3 rounded-md p-2 text-muted-foreground" onClick={() => setMobileOpen(false)} aria-label="关闭导航"><X className="h-4 w-4" /></button><Sidebar pathname={pathname} onNavigate={() => setMobileOpen(false)} /></aside>
+          <aside className="absolute inset-y-0 left-0 w-[min(86vw,290px)] border-r bg-card shadow-panel"><button className="focus-ring absolute right-3 top-3 rounded-md p-2 text-muted-foreground" onClick={() => setMobileOpen(false)} aria-label="关闭导航"><X className="h-4 w-4" /></button><Sidebar pathname={pathname} items={activeNavigation} onNavigate={() => setMobileOpen(false)} /></aside>
         </div>
       ) : null}
       <div className="lg:pl-64">
@@ -170,6 +216,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setMobileOpen(true)} aria-label="打开导航"><Menu className="h-5 w-5" /></Button>
           <div className="min-w-0"><p className="truncate text-sm font-semibold">{title}</p><p className="hidden text-[10px] text-muted-foreground sm:block">授权安全评估工作区</p></div>
           <button className="focus-ring ml-auto hidden h-9 w-64 items-center gap-2 rounded-lg border bg-muted/40 px-3 text-xs text-muted-foreground hover:bg-muted md:flex" onClick={() => setCommandOpen(true)}><Search className="h-3.5 w-3.5" />快速导航<span className="ml-auto rounded border bg-background px-1.5 py-0.5 font-mono text-[9px]">Ctrl K</span></button>
+          <Button variant="outline" size="sm" loading={modeSaving || preferencesLoading} onClick={() => void switchExperienceMode()} aria-label={`切换到${experienceMode === "beginner" ? "高级" : "新手"}模式`}><SlidersHorizontal className="h-3.5 w-3.5" /><span className="hidden sm:inline">{experienceMode === "beginner" ? "新手模式" : "高级模式"}</span></Button>
           <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label={theme === "dark" ? "切换亮色模式" : "切换暗色模式"}>{theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}</Button>
           <DropdownMenu.Root open={alertsOpen} onOpenChange={setAlertsOpen}>
             <DropdownMenu.Trigger asChild><Button variant="ghost" size="icon" aria-label="查看通知" className="relative"><Bell className="h-4 w-4" /><span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-amber-400" /></Button></DropdownMenu.Trigger>
@@ -190,7 +237,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
         </header>
         <main className="mx-auto w-full max-w-[1680px] px-4 py-6 sm:px-6 lg:px-8">{children}</main>
       </div>
-      <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+      <CommandPalette open={commandOpen} items={activeNavigation} onOpenChange={setCommandOpen} />
     </div>
   );
 }

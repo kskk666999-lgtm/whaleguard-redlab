@@ -407,8 +407,14 @@ try {
     Write-Host "Docker Desktop security: OSType=$($runtimeSecurity.OSType), WSL2=$($wslRuntimeEvidence.Distribution)/v$($wslRuntimeEvidence.Version)/running, TCP2375=false, Kubernetes=false (settings: $($backendEvidence.SettingsPath); WSL: $confirmedWslVersion)"
 
     $envPath = Ensure-WgEnvironment
-    $composeBaseArguments = @(Get-WgComposeBaseArguments -Endpoint $dockerTarget.Endpoint)
-    Assert-WgComposeOwnership -Docker $dockerCli -Endpoint $dockerTarget.Endpoint
+    $composeProject = Resolve-WgComposeProjectName `
+        -Docker $dockerCli -Endpoint $dockerTarget.Endpoint
+    $composeBaseArguments = @(
+        Get-WgComposeBaseArguments -Endpoint $dockerTarget.Endpoint `
+            -ProjectName $composeProject
+    )
+    Assert-WgComposeOwnership -Docker $dockerCli -Endpoint $dockerTarget.Endpoint `
+        -ProjectName $composeProject
     Invoke-Checked -Label "Stop prior WhaleGuard containers" -FilePath $dockerCli -Arguments ($composeBaseArguments + @("down", "--remove-orphans")) -WorkingDirectory $projectRoot
     Stop-ProjectLoopbackProcesses
     Write-State -Phase "building-whaleguard"
@@ -421,12 +427,14 @@ try {
 
     $persistenceScript = Join-Path $PSScriptRoot "verify-persistence.ps1"
     Write-State -Phase "verifying-restart-persistence"
-    Assert-WgComposeOwnership -Docker $dockerCli -Endpoint $dockerTarget.Endpoint
+    Assert-WgComposeOwnership -Docker $dockerCli -Endpoint $dockerTarget.Endpoint `
+        -ProjectName $composeProject
     Invoke-Checked -Label "Restart WhaleGuard containers" -FilePath $dockerCli -Arguments ($composeBaseArguments + @("restart")) -WorkingDirectory $projectRoot
     Invoke-Checked -Label "Verify persistence after restart" -FilePath $powershellExe -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $persistenceScript, "-Phase", "restart") -WorkingDirectory $projectRoot
 
     Write-State -Phase "verifying-down-up-persistence"
-    Assert-WgComposeOwnership -Docker $dockerCli -Endpoint $dockerTarget.Endpoint
+    Assert-WgComposeOwnership -Docker $dockerCli -Endpoint $dockerTarget.Endpoint `
+        -ProjectName $composeProject
     Invoke-Checked -Label "Stop WhaleGuard without deleting volumes" -FilePath $dockerCli -Arguments ($composeBaseArguments + @("down")) -WorkingDirectory $projectRoot
     Invoke-Checked -Label "Start WhaleGuard from retained volumes" -FilePath $dockerCli -Arguments ($composeBaseArguments + @("up", "-d")) -WorkingDirectory $projectRoot
     Invoke-Checked -Label "Verify persistence after down/up" -FilePath $powershellExe -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $persistenceScript, "-Phase", "down-up") -WorkingDirectory $projectRoot

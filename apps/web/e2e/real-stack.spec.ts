@@ -48,6 +48,29 @@ async function authenticatedJson<T>(page: Page, path: string): Promise<T> {
   );
 }
 
+async function finishOnboardingAndOpenAdvancedDashboard(page: Page): Promise<void> {
+  await page.waitForURL(/\/(?:onboarding|dashboard)$/);
+  if (new URL(page.url()).pathname === "/onboarding") {
+    await page.getByRole("button", { name: /我想学习 AI 安全/ }).click();
+    await page.getByRole("button", { name: "下一步" }).click();
+    await expect(page.getByRole("heading", { name: "确认本地服务是否准备好" })).toBeVisible();
+    await page.getByRole("button", { name: "下一步" }).click();
+    await page.getByRole("button", { name: /暂时跳过，继续/ }).click();
+    await page.getByRole("button", { name: /进入 WhaleGuard/ }).click();
+    await expect(page).toHaveURL(/\/academy$/);
+  }
+
+  await page.goto("/dashboard");
+  const beginnerHeading = page.getByRole("heading", { name: "你今天想做什么？" });
+  const advancedHeading = page.getByRole("heading", { name: "系统总览" });
+  await expect(beginnerHeading.or(advancedHeading)).toBeVisible();
+  if (await beginnerHeading.isVisible()) {
+    await page.getByRole("button", { name: "切换到高级模式" }).click();
+    await expect(page.getByRole("button", { name: "切换到新手模式" })).toBeVisible();
+  }
+  await expect(advancedHeading).toBeVisible();
+}
+
 test.beforeAll(() => {
   requireLoopbackUrl(webBaseUrl, "WG_E2E_WEB_BASE_URL");
   const apiUrl = requireLoopbackUrl(apiBaseUrl, "WG_E2E_API_BASE_URL");
@@ -66,8 +89,7 @@ test("真实 Docker 栈完成登录、授权、Agent 运行、审批和 RQ 回�
   await page.getByLabel("用户名", { exact: true }).fill(credentials.username);
   await page.getByLabel("密码", { exact: true }).fill(credentials.password);
   await page.getByRole("button", { name: /进入安全工作区/ }).click();
-  await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(page.getByRole("heading", { name: "系统总览" })).toBeVisible();
+  await finishOnboardingAndOpenAdvancedDashboard(page);
 
   const suffix = `${Date.now()}-${test.info().workerIndex}`;
   const projectName = `Playwright 真实栈 ${suffix}`;

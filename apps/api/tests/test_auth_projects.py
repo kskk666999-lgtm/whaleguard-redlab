@@ -23,6 +23,63 @@ def test_health_and_login(client: TestClient) -> None:
     assert oversized.status_code == 413
 
 
+def test_user_beginner_preferences_are_private_and_persisted(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    initial = client.get("/api/v1/auth/preferences", headers=auth)
+    assert initial.status_code == 200, initial.text
+    assert initial.json() == {
+        "experience_mode": "beginner",
+        "onboarding_complete": False,
+        "onboarding_goal": None,
+    }
+
+    updated = client.patch(
+        "/api/v1/auth/preferences",
+        headers=auth,
+        json={
+            "experience_mode": "advanced",
+            "onboarding_complete": True,
+            "onboarding_goal": "both",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json() == {
+        "experience_mode": "advanced",
+        "onboarding_complete": True,
+        "onboarding_goal": "both",
+    }
+
+    me = client.get("/api/v1/auth/me", headers=auth)
+    assert me.status_code == 200, me.text
+    assert me.json()["preferences"] == updated.json()
+
+    reloaded = client.get("/api/v1/auth/preferences", headers=auth)
+    assert reloaded.status_code == 200
+    assert reloaded.json() == updated.json()
+
+
+def test_system_status_requires_login_and_uses_plain_language(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    assert client.get("/api/v1/system/status").status_code == 401
+    response = client.get("/api/v1/system/status", headers=auth)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["overall"] in {"ready", "degraded"}
+    assert set(body["services"]) == {
+        "api",
+        "database",
+        "redis",
+        "worker",
+        "labs",
+        "model_provider",
+    }
+    assert body["services"]["api"]["status"] == "normal"
+    assert body["services"]["database"]["status"] == "normal"
+    assert body["services"]["model_provider"]["status"] in {"normal", "optional"}
+
+
 def test_csrf_and_project_crud(client: TestClient, auth: dict[str, str]) -> None:
     no_csrf = {"Authorization": auth["Authorization"]}
     rejected = client.post("/api/v1/projects", headers=no_csrf, json={"name": "blocked"})

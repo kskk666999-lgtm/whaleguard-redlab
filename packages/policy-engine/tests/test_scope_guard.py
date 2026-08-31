@@ -28,11 +28,17 @@ def context(**kwargs):
     return RequestContext(**values)
 
 
-def test_private_targets_allowed_by_default():
+def test_private_targets_require_an_explicit_scope():
     guard = ScopeGuard(resolver=resolver({"agent.local": ["172.18.0.5"]}))
     decision = guard.check_url("http://agent.local:8102/run", context())
-    assert decision.allowed
-    assert decision.matched_scope == "default-private-policy"
+    assert not decision.allowed
+    assert decision.code == "target_out_of_scope"
+
+    scoped = ScopeGuard(
+        [AuthorizationScope("agent.local", kind="domain")],
+        resolver=resolver({"agent.local": ["172.18.0.5"]}),
+    )
+    assert scoped.check_url("http://agent.local:8102/run", context()).allowed
 
 
 def test_default_resolver_is_bound_when_guard_is_created(monkeypatch):
@@ -41,7 +47,7 @@ def test_default_resolver_is_bound_when_guard_is_created(monkeypatch):
         "getaddrinfo",
         resolver({"agent.local": ["10.10.10.10"]}),
     )
-    assert ScopeGuard().check_url("http://agent.local", context()).allowed
+    assert not ScopeGuard().check_url("http://agent.local", context()).allowed
 
 
 def test_public_target_blocked_by_default():
@@ -137,7 +143,10 @@ def test_high_risk_tool_waits_for_approval():
 
 def test_every_decision_is_sent_to_audit_sink():
     records = []
-    guard = ScopeGuard(decision_sink=records.append)
+    guard = ScopeGuard(
+        [AuthorizationScope("127.0.0.1", kind="host")],
+        decision_sink=records.append,
+    )
     guard.check_url("http://127.0.0.1:8000/health", context())
     assert len(records) == 1
     assert records[0].to_log_record()["allowed"] is True
@@ -184,7 +193,10 @@ async def test_scoped_client_pins_checked_ip_and_preserves_host_and_sni():
         requests.append(request)
         return httpx.Response(200, json={"ok": True})
 
-    guard = ScopeGuard(resolver=resolver({"agent.internal": ["10.20.30.40"]}))
+    guard = ScopeGuard(
+        [AuthorizationScope("agent.internal", kind="domain")],
+        resolver=resolver({"agent.internal": ["10.20.30.40"]}),
+    )
     async with ScopedAsyncClient(guard, transport=httpx.MockTransport(handler)) as client:
         response = await client.request(
             "GET",
@@ -210,12 +222,16 @@ async def test_redirect_drops_body_and_cross_origin_credentials():
         return httpx.Response(200)
 
     guard = ScopeGuard(
+        [
+            AuthorizationScope("first.internal", kind="domain"),
+            AuthorizationScope("second.internal", kind="domain"),
+        ],
         resolver=resolver(
             {
                 "first.internal": ["10.0.0.10"],
                 "second.internal": ["10.0.0.11"],
             }
-        )
+        ),
     )
     async with ScopedAsyncClient(guard, transport=httpx.MockTransport(handler)) as client:
         response = await client.request(

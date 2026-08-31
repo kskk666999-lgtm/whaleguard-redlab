@@ -1,5 +1,20 @@
 import { z } from "zod";
 
+function hasAmbiguousUrlPath(value: string) {
+  const rawPath = value.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/\\?#]*/i, "").split(/[?#]/, 1)[0] || "/";
+  let decoded = rawPath;
+  try {
+    for (let index = 0; index < 8; index += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    }
+  } catch {
+    return true;
+  }
+  return decoded.includes("\\") || decoded.split("/").some((segment) => segment === "." || segment === "..");
+}
+
 export const loginInputSchema = z.object({
   username: z.string().min(1, "请输入用户名"),
   password: z.string().min(8, "密码至少 8 位"),
@@ -18,6 +33,28 @@ export const loginResponseSchema = z.object({
       role: z.union([z.string(), z.object({ name: z.string() }).transform((value) => value.name)]).optional(),
     })
     .passthrough(),
+});
+
+export const userPreferencesSchema = z.object({
+  experience_mode: z.enum(["beginner", "advanced"]),
+  onboarding_complete: z.boolean(),
+  onboarding_goal: z.enum(["learn", "scan", "both"]).nullable(),
+});
+
+export const userPreferencesUpdateSchema = userPreferencesSchema.partial();
+
+export const systemServiceStatusSchema = z.object({
+  status: z.enum(["normal", "not_started", "optional", "abnormal"]),
+  label: z.string(),
+  detail: z.string(),
+  optional: z.boolean(),
+});
+
+export const systemStatusSchema = z.object({
+  overall: z.enum(["ready", "degraded"]),
+  checked_at: z.string(),
+  services: z.record(systemServiceStatusSchema),
+  model_provider_name: z.string().nullable(),
 });
 
 export const projectInputSchema = z.object({
@@ -58,6 +95,62 @@ export const reportInputSchema = z.object({
   project_id: z.string().uuid(),
   name: z.string().min(2).max(120),
   format: z.enum(["html", "markdown", "json"]),
+});
+
+export const websiteScanInputSchema = z
+  .object({
+    project_id: z.preprocess((value) => value === "" ? undefined : value, z.string().uuid().optional()),
+    target_url: z.string().min(1, "请输入靶场网址").max(2048, "网址过长").url("请输入完整网址，例如 http://127.0.0.1:8080"),
+    model_channel_id: z.preprocess((value) => value === "" ? undefined : value, z.string().uuid().optional()),
+    authorization_confirmed: z.literal(true, {
+      errorMap: () => ({ message: "必须确认目标归你所有或已获得明确授权" }),
+    }),
+    generate_report: z.literal(true),
+    safety_level: z.literal("safe_read_only"),
+  })
+  .superRefine((value, ctx) => {
+    try {
+      const target = new URL(value.target_url);
+      if (!['http:', 'https:'].includes(target.protocol)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "只允许 HTTP 或 HTTPS 网址", path: ["target_url"] });
+      }
+      if (target.username || target.password) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "网址中不能包含用户名或密码", path: ["target_url"] });
+      }
+      if (target.search || target.hash) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "请填写不含查询参数或片段的网址", path: ["target_url"] });
+      }
+      if (hasAmbiguousUrlPath(value.target_url)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "网址路径不能包含点号跳转或反斜杠", path: ["target_url"] });
+      }
+    } catch {
+      // `url()` already provides the user-facing validation message.
+    }
+  });
+
+export const websiteModelSetupSchema = z.object({
+  project_id: z.string().uuid("请选择项目"),
+  name: z.string().min(2, "渠道名称至少 2 个字符").max(200),
+  provider: z.enum(["openai-compatible", "deepseek-compatible", "glm-compatible", "qwen-compatible"]),
+  base_url: z.string().url("请输入完整的模型 API 地址").superRefine((value, ctx) => {
+    try {
+      const target = new URL(value);
+      if (!["http:", "https:"].includes(target.protocol)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "模型 API 地址只允许 HTTP 或 HTTPS" });
+      }
+      if (target.username || target.password) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "模型 API 地址不能包含用户名或密码" });
+      }
+      if (target.search || target.hash) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "模型 API 地址不能包含查询参数或片段" });
+      }
+    } catch {
+      // `url()` already reports the malformed value.
+    }
+  }),
+  api_key: z.string().min(8, "请输入有效的 API Key").max(4096),
+  model: z.string().min(1, "请输入模型名称").max(200),
+  authorization_confirmed: z.literal(true),
 });
 
 export const mcpImportSchema = z.object({

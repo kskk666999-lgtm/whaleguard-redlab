@@ -1,7 +1,7 @@
 # WhaleGuard AI RedLab 历史通宵续作进度
 
 > [!NOTE]
-> 本文件是 2026-08-30 Docker 安装完成前的过程快照。后续 v0.1.0 已通过 Docker 运行验收；当前状态见 [README](../README.md)，v0.1.1 发布判定见 [RELEASE](RELEASE.md)。
+> 本文件是 2026-08-30 Docker 安装完成前的过程快照。后续 v0.1.0 已通过 Docker 运行验收，v0.1.1 已正式发布；当前状态见 [README](../README.md)，后续版本发布判定见 [RELEASE](RELEASE.md)。
 
 最近更新：2026-08-30 06:12 +08:00
 

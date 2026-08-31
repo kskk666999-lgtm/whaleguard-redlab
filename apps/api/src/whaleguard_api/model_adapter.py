@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 from uuid import UUID
 
 import httpx
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from .models import ModelChannel
@@ -20,6 +22,10 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 class ModelAdapterError(ValueError):
     """A sanitized model transport or response validation failure."""
+
+    def __init__(self, message: str, *, code: str = "invalid_response") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(slots=True)
@@ -35,6 +41,82 @@ class ChatCompletionResult:
 
 
 RequestSender = Callable[..., httpx.Response]
+StructuredOutput = TypeVar("StructuredOutput", bound=BaseModel)
+
+_JSON_FENCE = re.compile(r"```[ \t]*(?:json)?[ \t]*\r?\n?(.*?)```", re.IGNORECASE | re.DOTALL)
+_JSON_MODE_PROVIDERS = frozenset(
+    {
+        "openai-compatible",
+        "deepseek-compatible",
+        "glm-compatible",
+        "qwen-compatible",
+        "ollama-compatible",
+    }
+)
+MAX_JSON_EXTRACTION_ATTEMPTS = 64
+
+
+def extract_json_object(value: str) -> dict[str, Any]:
+    """Extract one JSON object from common OpenAI-compatible text wrappers.
+
+    Providers may return a bare object, a Markdown JSON fence, or a short
+    explanatory prefix/suffix despite being instructed to use JSON mode. The
+    extraction is intentionally bounded by the already-enforced model output
+    limit and never evaluates provider text as code.
+    """
+
+    text = value.strip()
+    if not text:
+        raise ModelAdapterError("模型结构化输出为空", code="structured_output")
+
+    candidates = [text]
+    candidates.extend(match.group(1).strip() for match in _JSON_FENCE.finditer(text))
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+
+    decoder = json.JSONDecoder()
+    attempts = 0
+    for index, character in enumerate(text):
+        if character != "{":
+            continue
+        attempts += 1
+        if attempts > MAX_JSON_EXTRACTION_ATTEMPTS:
+            break
+        try:
+            payload, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise ModelAdapterError("模型未返回有效 JSON 对象", code="structured_output")
+
+
+def parse_structured_output(
+    value: str,
+    schema: type[StructuredOutput],
+    *,
+    label: str = "模型",
+) -> StructuredOutput:
+    """Extract and strictly validate provider output with a Pydantic schema."""
+
+    payload = extract_json_object(value)
+    try:
+        return schema.model_validate(payload, strict=True)
+    except ValidationError as exc:
+        raise ModelAdapterError(f"{label}结构化输出字段无效", code="structured_output") from exc
+
+
+def _json_response_format(provider: str) -> dict[str, str] | None:
+    """Return the conservative JSON mode shared by supported compatible APIs."""
+
+    if provider.strip().lower() in _JSON_MODE_PROVIDERS:
+        return {"type": "json_object"}
+    return None
 
 
 def _safe_tool_calls(value: Any) -> list[dict[str, Any]]:
@@ -62,6 +144,24 @@ def _safe_tool_calls(value: Any) -> list[dict[str, Any]]:
     return safe
 
 
+def _message_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list) or not value:
+        raise ModelAdapterError("模型响应缺少 message.content")
+    parts: list[str] = []
+    for item in value[:100]:
+        if not isinstance(item, dict):
+            raise ModelAdapterError("模型响应 message.content 条目无效")
+        text = item.get("text")
+        if isinstance(text, dict):
+            text = text.get("value")
+        if not isinstance(text, str):
+            raise ModelAdapterError("模型响应 message.content 文本无效")
+        parts.append(text)
+    return "".join(parts)
+
+
 def _usage(value: Any) -> dict[str, int | float]:
     if value is None:
         value = {}
@@ -87,7 +187,7 @@ def _usage(value: Any) -> dict[str, int | float]:
 
 def _parse_response(response: httpx.Response, latency_ms: int) -> ChatCompletionResult:
     if response.status_code < 200 or response.status_code >= 300:
-        raise ModelAdapterError(f"模型服务返回 HTTP {response.status_code}")
+        raise ModelAdapterError(f"模型服务返回 HTTP {response.status_code}", code="provider_error")
     if len(response.content) > MAX_RESPONSE_BYTES:
         raise ModelAdapterError("模型响应超过大小限制")
     try:
@@ -100,9 +200,9 @@ def _parse_response(response: httpx.Response, latency_ms: int) -> ChatCompletion
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise ModelAdapterError("模型响应缺少 choices")
     message = choices[0].get("message")
-    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+    if not isinstance(message, dict):
         raise ModelAdapterError("模型响应缺少 message.content")
-    original_output = message["content"]
+    original_output = _message_content(message.get("content"))
     output = original_output[:MAX_MODEL_OUTPUT_CHARS]
     finish_reason = choices[0].get("finish_reason")
     if finish_reason is not None and not isinstance(finish_reason, str):
@@ -131,9 +231,12 @@ def invoke_chat_completion(
     request_id: str | None = None,
     system_prompt: str | None = None,
     request_sender: RequestSender | None = None,
+    timeout_seconds: float | None = None,
+    max_redirects: int | None = None,
+    json_mode: bool = False,
 ) -> ChatCompletionResult:
     if not channel.enabled:
-        raise ModelAdapterError("模型渠道已禁用")
+        raise ModelAdapterError("模型渠道已禁用", code="channel_unavailable")
     endpoint = f"{channel.base_url.rstrip('/')}/chat/completions"
     api_key = decrypt_secret(channel.api_key_encrypted)
     headers = decrypt_json(channel.extra_headers_encrypted)
@@ -166,39 +269,44 @@ def invoke_chat_completion(
         "max_tokens": channel.max_tokens,
         "stream": False,
     }
+    if json_mode and (response_format := _json_response_format(channel.provider)):
+        body["response_format"] = response_format
     started = time.perf_counter()
     try:
         sender = request_sender or guarded_request
+        request_options: dict[str, Any] = {
+            "headers": headers,
+            "timeout": min(float(channel.timeout), timeout_seconds)
+            if timeout_seconds is not None
+            else channel.timeout,
+            "request_id": request_id,
+            "json_body": body,
+            "max_response_bytes": MAX_RESPONSE_BYTES,
+        }
+        if max_redirects is not None:
+            request_options["max_redirects"] = max_redirects
         response = sender(
             db,
             "POST",
             endpoint,
             project_id,
-            headers=headers,
-            timeout=channel.timeout,
-            request_id=request_id,
-            json_body=body,
+            **request_options,
         )
-    except (ScopeDenied, httpx.HTTPError) as exc:
-        raise ModelAdapterError("模型请求被 Scope Guard 阻止或连接失败") from exc
+    except httpx.TimeoutException as exc:
+        raise ModelAdapterError("模型请求超时", code="timeout") from exc
+    except ScopeDenied as exc:
+        raise ModelAdapterError("模型请求被 Scope Guard 阻止", code="scope_denied") from exc
+    except httpx.HTTPError as exc:
+        raise ModelAdapterError("模型连接失败", code="transport_error") from exc
     latency_ms = round((time.perf_counter() - started) * 1000)
     return _parse_response(response, latency_ms)
 
 
 def parse_judge_output(value: str) -> dict[str, Any]:
-    text = value.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if len(lines) >= 3 and lines[-1].strip() == "```":
-            text = "\n".join(lines[1:-1])
-            if text.lstrip().startswith("json"):
-                text = text.lstrip()[4:].lstrip()
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ModelAdapterError("LLM Judge 未返回有效 JSON") from exc
-    if not isinstance(payload, dict):
-        raise ModelAdapterError("LLM Judge 返回结构无效")
+        payload = extract_json_object(value)
+    except ModelAdapterError as exc:
+        raise ModelAdapterError("LLM Judge 未返回有效 JSON", code=exc.code) from exc
     required_booleans = (
         "passed",
         "attack_success",

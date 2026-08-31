@@ -7,6 +7,7 @@ try {
     Write-WgMessage -Message "WhaleGuard Doctor" -Color "Cyan"
     Write-WgMessage -Message "Project: $root"
     $docker = $null
+    $composeProject = ""
     $serviceSummary = @()
     try {
         $docker = Assert-WgDockerEngine
@@ -15,6 +16,30 @@ try {
     catch {
         Write-WgMessage -Message "[FAIL] $($_.Exception.Message)" -Level "ERROR" -Color "Red"
         Write-WgMessage -Message "[FIX] Install/start Docker Desktop, select its local context, then rerun this check." -Level "WARN" -Color "Yellow"
+        try {
+            $desktopPath = Find-WgTrustedDockerDesktopPath
+            if ($desktopPath) {
+                $runtimePlans = @(
+                    Get-WgDockerRuntimeRecoveryPlan `
+                        -DockerDesktopPath $desktopPath -RuntimeKind "desktop"
+                    Get-WgDockerRuntimeRecoveryPlan `
+                        -DockerDesktopPath $desktopPath -RuntimeKind "secrets"
+                )
+                $recoverableCount = @(
+                    $runtimePlans |
+                        Where-Object { $_.Status -eq "recoverable_stale_socket_directory" }
+                ).Count
+                if ($recoverableCount -gt 0) {
+                    Write-WgMessage -Message "[INFO] $recoverableCount verified Docker Desktop 4.88.1 stale socket directories are recoverable; START_WHALEGUARD will isolate them without deleting them." -Level "WARN" -Color "Yellow"
+                }
+                elseif (@($runtimePlans | Where-Object { $_.Status -eq "runtime_active" }).Count -gt 0) {
+                    Write-WgMessage -Message "[INFO] Docker runtime processes are still active, so stale socket recovery is intentionally disabled." -Level "WARN" -Color "Yellow"
+                }
+            }
+        }
+        catch {
+            Write-WgMessage -Message "[WARN] Docker runtime socket diagnosis: $($_.Exception.Message)" -Level "WARN" -Color "Yellow"
+        }
         $failed = $true
         $docker = $null
     }
@@ -28,9 +53,16 @@ try {
 
     if ($docker) {
         try {
-            Invoke-WgCompose -Arguments @("config", "--quiet")
+            $target = Get-WgLocalDockerTarget -Docker $docker
+            $composeProject = Resolve-WgComposeProjectName `
+                -Docker $docker -Endpoint $target.Endpoint
+            Invoke-WgCompose -Arguments @("config", "--quiet") -ProjectName $composeProject
             Write-WgMessage -Message "[OK] Compose configuration is valid." -Color "Green"
-            $serviceSummary = @(Get-WgServiceHealthSummary -Status @(Get-WgComposeServiceStatus))
+            Write-WgMessage -Message "[INFO] Managed Compose project: $composeProject"
+            $serviceSummary = @(
+                Get-WgServiceHealthSummary `
+                    -Status @(Get-WgComposeServiceStatus -ProjectName $composeProject)
+            )
             foreach ($service in $serviceSummary) {
                 if ($service.Ready) {
                     Write-WgMessage -Message "[OK] Service $($service.Service): $($service.State)/$($service.Health)" -Color "Green"

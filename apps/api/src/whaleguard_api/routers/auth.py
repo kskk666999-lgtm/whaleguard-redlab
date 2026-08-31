@@ -3,16 +3,31 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Request, status
+from pydantic import ValidationError
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
 from ..audit import write_audit
 from ..dependencies import DB, CurrentUser, user_permissions
 from ..models import Role, User
-from ..schemas import LoginRequest, RoleSummary, TokenResponse, UserResponse
+from ..schemas import (
+    LoginRequest,
+    RoleSummary,
+    TokenResponse,
+    UserPreferences,
+    UserPreferencesUpdate,
+    UserResponse,
+)
 from ..security import create_access_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["认证"])
+
+
+def user_preferences(user: User) -> UserPreferences:
+    try:
+        return UserPreferences.model_validate(user.preferences or {})
+    except ValidationError:
+        return UserPreferences()
 
 
 def user_response(user: User) -> UserResponse:
@@ -32,6 +47,7 @@ def user_response(user: User) -> UserResponse:
             )
             for role in user.roles
         ],
+        preferences=user_preferences(user),
     )
 
 
@@ -74,3 +90,42 @@ def login(payload: LoginRequest, request: Request, db: DB) -> TokenResponse:
 @router.get("/me", response_model=UserResponse)
 def me(user: CurrentUser) -> UserResponse:
     return user_response(user)
+
+
+@router.get("/preferences", response_model=UserPreferences)
+def get_preferences(user: CurrentUser) -> UserPreferences:
+    return user_preferences(user)
+
+
+@router.patch("/preferences", response_model=UserPreferences)
+def update_preferences(
+    payload: UserPreferencesUpdate,
+    request: Request,
+    db: DB,
+    user: CurrentUser,
+) -> UserPreferences:
+    current = user_preferences(user)
+    updates: dict[str, object] = {}
+    if payload.experience_mode is not None:
+        updates["experience_mode"] = payload.experience_mode
+    if payload.onboarding_complete is not None:
+        updates["onboarding_complete"] = payload.onboarding_complete
+    if "onboarding_goal" in payload.model_fields_set:
+        updates["onboarding_goal"] = payload.onboarding_goal
+    updated = current.model_copy(update=updates)
+    user.preferences = updated.model_dump(mode="json")
+    write_audit(
+        db,
+        request,
+        "user.preferences.update",
+        "user",
+        user.id,
+        actor=user,
+        details={
+            "experience_mode": updated.experience_mode,
+            "onboarding_complete": updated.onboarding_complete,
+            "onboarding_goal": updated.onboarding_goal,
+        },
+    )
+    db.commit()
+    return updated

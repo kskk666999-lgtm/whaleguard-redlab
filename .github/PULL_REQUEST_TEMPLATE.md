@@ -4,6 +4,7 @@
 
 ## 变更类型 / Change type
 
+- [ ] 产品功能或新手体验 / Product & beginner experience
 - [ ] 可靠性 / Reliability
 - [ ] 安全修复或加固 / Security
 - [ ] 数据库迁移 / Database migration
@@ -62,7 +63,7 @@
 - [ ] 不需要 Changelog。
 - [ ] 已更新 `CHANGELOG.md` 的 `[Unreleased]`。
 - [ ] 已同步 README、发布手册、架构/API/部署文档中的受影响内容。
-- [ ] 本 PR 完成后仍有 v0.1.1 阻断项，**不得打 tag**。
+- [ ] 本 PR 完成后仍有 v0.2.0 阻断项，**不得打 tag**。
 - [ ] 本 PR 连同其他证据满足发布门禁；最终 ready 判定仍由维护者按 `docs/RELEASE.md` 完成。
 
 ## Reviewer 重点

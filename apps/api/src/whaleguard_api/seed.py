@@ -35,6 +35,13 @@ from .security import hash_password
 
 logger = logging.getLogger("whaleguard.seed")
 
+BUNDLED_DEMO_PROJECT_NAME = "WhaleGuard Demo Lab"
+BUNDLED_DEMO_PROJECT_TAGS = {"demo", "authorized-local-only"}
+BUNDLED_MOCK_AGENT_NAME = "AgentArena Mock Agent"
+BUNDLED_MOCK_AGENT_URL = "http://mock-agent:8102"
+BUNDLED_MOCK_MODEL_NAME = "Mock LLM（无真实密钥）"
+BUNDLED_MOCK_MODEL_BASE_URL = "http://mock-llm:8101/v1"
+
 PERMISSION_DESCRIPTIONS = {
     "dashboard.read": "查看系统总览",
     "projects.read": "查看项目",
@@ -54,6 +61,9 @@ PERMISSION_DESCRIPTIONS = {
     "tests.write": "管理测试套件与用例",
     "runs.read": "查看测试运行",
     "runs.execute": "创建、暂停、取消和重试测试运行",
+    "academy.read": "查看 WhaleGuard Academy 场景与学习进度",
+    "academy.execute": "执行 Academy 本地模拟场景并提交学习证据",
+    "academy.reset": "重置 Academy 场景、记忆与虚构训练数据",
     "findings.read": "查看 Findings",
     "findings.write": "管理 Findings",
     "findings.delete": "删除 Findings",
@@ -90,6 +100,7 @@ ROLE_PERMISSIONS = {
         "mcp.read",
         "tests.read",
         "runs.read",
+        "academy.read",
         "findings.read",
         "findings.write",
         "evidence.read",
@@ -293,6 +304,83 @@ def _seed_rbac(db: Session) -> dict[str, Role]:
     return roles
 
 
+def _ensure_bundled_demo_exact_scopes(db: Session, admin: User) -> None:
+    """Add only the exact network scopes required by genuine bundled demo resources.
+
+    Existing scopes are never re-enabled or broadened. This keeps an administrator's
+    explicit revocation effective while allowing pre-v0.2 demo databases to adopt the
+    deny-by-default Scope Guard without losing their local mock workflow.
+    """
+
+    projects = db.scalars(
+        select(Project).where(
+            Project.name == BUNDLED_DEMO_PROJECT_NAME,
+            Project.owner_id == admin.id,
+        )
+    ).all()
+    now = datetime.now(UTC)
+    for project in projects:
+        if not BUNDLED_DEMO_PROJECT_TAGS.issubset(set(project.tags or [])):
+            continue
+
+        exact_scopes: list[tuple[str, str]] = []
+        bundled_agent = db.scalar(
+            select(AgentTarget.id).where(
+                AgentTarget.project_id == project.id,
+                AgentTarget.name == BUNDLED_MOCK_AGENT_NAME,
+                AgentTarget.endpoint_url == BUNDLED_MOCK_AGENT_URL,
+                AgentTarget.agent_type == "whaleguard-mock-agent",
+            )
+        )
+        if bundled_agent is not None:
+            exact_scopes.append(("内置 Mock Agent 任务端点", f"{BUNDLED_MOCK_AGENT_URL}/tasks"))
+
+        bundled_model = db.scalar(
+            select(ModelChannel.id).where(
+                ModelChannel.project_id == project.id,
+                ModelChannel.name == BUNDLED_MOCK_MODEL_NAME,
+                ModelChannel.provider == "openai-compatible",
+                ModelChannel.base_url == BUNDLED_MOCK_MODEL_BASE_URL,
+                ModelChannel.model == "whaleguard-mock-safe",
+            )
+        )
+        if bundled_model is not None:
+            exact_scopes.extend(
+                (
+                    ("内置 Mock LLM 模型列表", f"{BUNDLED_MOCK_MODEL_BASE_URL}/models"),
+                    ("内置 Mock LLM 推理端点", f"{BUNDLED_MOCK_MODEL_BASE_URL}/chat/completions"),
+                )
+            )
+
+        for name, target_value in exact_scopes:
+            existing = db.scalar(
+                select(AuthorizationScope.id).where(
+                    AuthorizationScope.project_id == project.id,
+                    AuthorizationScope.target_type == "url",
+                    AuthorizationScope.target_value == target_value,
+                )
+            )
+            if existing is not None:
+                continue
+            db.add(
+                AuthorizationScope(
+                    project_id=project.id,
+                    name=name,
+                    target_type="url",
+                    target_value=target_value,
+                    allowed_request_types=["http"],
+                    is_authorized=True,
+                    confirmed_by_id=admin.id,
+                    authorized_at=now,
+                    expires_at=now + timedelta(days=3650),
+                    notes=(
+                        "WhaleGuard 内置 Docker 私网 Mock 的精确端点授权；"
+                        "不包含通配符，不适用于用户自定义目标。"
+                    ),
+                )
+            )
+
+
 def seed_database(db: Session, settings: Settings | None = None) -> str | None:
     settings = settings or get_settings()
     roles = _seed_rbac(db)
@@ -312,12 +400,13 @@ def seed_database(db: Session, settings: Settings | None = None) -> str | None:
         db.add(admin)
         db.flush()
     if db.scalar(select(Project.id).limit(1)) is not None:
+        _ensure_bundled_demo_exact_scopes(db, admin)
         db.commit()
         _announce_first_run_credentials(settings, admin, generated_password)
         return generated_password
 
     project = Project(
-        name="WhaleGuard Demo Lab",
+        name=BUNDLED_DEMO_PROJECT_NAME,
         description="仅包含本地、私有网络和虚构数据的安全评估演示。",
         owner_id=admin.id,
         tags=["demo", "authorized-local-only"],
@@ -340,16 +429,16 @@ def seed_database(db: Session, settings: Settings | None = None) -> str | None:
     db.add(
         ModelChannel(
             project_id=project.id,
-            name="Mock LLM（无真实密钥）",
+            name=BUNDLED_MOCK_MODEL_NAME,
             provider="openai-compatible",
-            base_url="http://mock-llm:8101/v1",
+            base_url=BUNDLED_MOCK_MODEL_BASE_URL,
             model="whaleguard-mock-safe",
             enabled=True,
         )
     )
     agent = AgentTarget(
         project_id=project.id,
-        name="AgentArena Mock Agent",
+        name=BUNDLED_MOCK_AGENT_NAME,
         description="Docker 私有网络中的无破坏性模拟 Agent。",
         endpoint_url=settings.mock_agent_url,
         agent_type="whaleguard-mock-agent",
@@ -492,6 +581,7 @@ def seed_database(db: Session, settings: Settings | None = None) -> str | None:
     db.add(report)
     db.flush()
     generate_report(db, report)
+    _ensure_bundled_demo_exact_scopes(db, admin)
     db.commit()
     _announce_first_run_credentials(settings, admin, generated_password)
     return generated_password

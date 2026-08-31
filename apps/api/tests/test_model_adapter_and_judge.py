@@ -9,8 +9,13 @@ from fastapi.testclient import TestClient
 
 from whaleguard_api import model_adapter
 from whaleguard_api.database import SessionLocal
-from whaleguard_api.model_adapter import ModelAdapterError, invoke_chat_completion
+from whaleguard_api.model_adapter import (
+    ModelAdapterError,
+    invoke_chat_completion,
+    parse_structured_output,
+)
 from whaleguard_api.models import ModelChannel
+from whaleguard_api.schemas import WebsiteScanAIStructuredOutput
 from whaleguard_api.security import encrypt_json, encrypt_secret
 
 
@@ -91,6 +96,120 @@ def test_openai_compatible_adapter_validates_and_sanitizes(project_id: str) -> N
             "fixture",
             request_sender=malformed,
         )
+
+
+def test_adapter_accepts_openai_compatible_text_content_parts(project_id: str) -> None:
+    def sender(*_args, **_kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "分段"},
+                                {"type": "text", "text": {"value": "响应"}},
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    with SessionLocal() as db:
+        result = invoke_chat_completion(
+            db,
+            _channel(project_id),
+            UUID(project_id),
+            "fixture",
+            request_sender=sender,
+        )
+
+    assert result.output == "分段响应"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        (
+            '{"summary":"安全摘要","priorities":["修复一","修复二"],'
+            '"limitations":"仅限一次只读观察"}'
+        ),
+        (
+            "```json\n"
+            '{"summary":"安全摘要","priorities":["修复一"],'
+            '"limitations":"仅限一次只读观察"}\n```'
+        ),
+        (
+            "分析如下： \n"
+            '{"summary":"安全摘要","priorities":["修复一"],'
+            '"limitations":"仅限一次只读观察"}\n以上为分析。'
+        ),
+        (
+            "  \r\n"
+            '{"summary":" 安全摘要 ","priorities":[" 修复一 "],'
+            '"limitations":" 仅限一次只读观察 "}\n  '
+        ),
+    ],
+)
+def test_structured_output_accepts_compatible_provider_wrappers(raw: str) -> None:
+    parsed = parse_structured_output(raw, WebsiteScanAIStructuredOutput)
+
+    assert parsed.summary == "安全摘要"
+    assert parsed.priorities[0] == "修复一"
+    assert parsed.limitations == "仅限一次只读观察"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"summary":"缺字段","priorities":["修复一"]}',
+        '{"summary":"错误类型","priorities":"修复一","limitations":"有限观察"}',
+        '{"summary":123,"priorities":["修复一"],"limitations":"有限观察"}',
+        '{"summary":"空条目","priorities":["   "],"limitations":"有限观察"}',
+        (
+            '{"summary":"额外字段","priorities":["修复一"],'
+            '"limitations":"有限观察","unexpected":true}'
+        ),
+        "{malformed-json",
+        '[{"summary":"顶层数组"}]',
+        "   ",
+    ],
+)
+def test_structured_output_rejects_missing_bad_or_malformed_fields(raw: str) -> None:
+    with pytest.raises(ModelAdapterError) as raised:
+        parse_structured_output(raw, WebsiteScanAIStructuredOutput)
+
+    assert raised.value.code == "structured_output"
+    assert raw not in str(raised.value)
+
+
+@pytest.mark.parametrize("provider", ["openai-compatible", "deepseek-compatible"])
+def test_json_mode_is_requested_for_supported_compatible_providers(
+    provider: str, project_id: str
+) -> None:
+    captured: dict[str, Any] = {}
+    channel = _channel(project_id, f"{provider} JSON mode")
+    channel.provider = provider
+
+    def sender(_db, _method, _url, _project_id, **kwargs):
+        captured.update(kwargs["json_body"])
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "{}"}}]},
+        )
+
+    with SessionLocal() as db:
+        invoke_chat_completion(
+            db,
+            channel,
+            UUID(project_id),
+            "Return JSON",
+            request_sender=sender,
+            json_mode=True,
+        )
+
+    assert captured["response_format"] == {"type": "json_object"}
 
 
 def _create_single_case_suite(

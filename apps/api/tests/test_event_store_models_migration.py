@@ -4,11 +4,12 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import UniqueConstraint, func, inspect, select
+from sqlalchemy import MetaData, Table, UniqueConstraint, func, inspect, select
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -239,14 +240,28 @@ def test_event_store_migration_upgrade_downgrade_and_reupgrade() -> None:
             assert "test_runs" in table_names
 
             with Session(engine) as session:
-                user = User(
-                    username=f"migration-user-{uuid4()}",
-                    email=f"{uuid4()}@example.test",
-                    password_hash="not-a-real-password-hash",
+                # Reflect the frozen v0.1.0 table instead of inserting through
+                # today's User ORM, which intentionally contains later columns.
+                legacy_users = Table("users", MetaData(), autoload_with=engine)
+                user_id = uuid4()
+                now = datetime.now(UTC)
+                session.execute(
+                    legacy_users.insert().values(
+                        # SQLite reflection loses the UUID binder, so store the
+                        # same 32-character representation used by sa.Uuid.
+                        id=user_id.hex,
+                        username=f"migration-user-{uuid4()}",
+                        email=f"{uuid4()}@example.test",
+                        password_hash="not-a-real-password-hash",
+                        display_name=None,
+                        is_active=True,
+                        is_superuser=False,
+                        last_login_at=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
-                session.add(user)
-                session.flush()
-                project = Project(name="Migration project", owner_id=user.id)
+                project = Project(name="Migration project", owner_id=user_id)
                 session.add(project)
                 session.flush()
                 suite = TestSuite(project_id=project.id, name="Migration suite")
@@ -256,7 +271,7 @@ def test_event_store_migration_upgrade_downgrade_and_reupgrade() -> None:
                     project_id=project.id,
                     suite_id=suite.id,
                     name="Legacy event run",
-                    requested_by_id=user.id,
+                    requested_by_id=user_id,
                     event_log=[
                         {
                             "sequence": 2,

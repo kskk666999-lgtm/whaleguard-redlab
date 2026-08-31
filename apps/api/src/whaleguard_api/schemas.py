@@ -4,7 +4,17 @@ from datetime import datetime
 from typing import Any, Generic, Literal, TypeVar
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    field_serializer,
+    field_validator,
+)
+
+from .security import redact
 
 
 class APIModel(BaseModel):
@@ -39,6 +49,20 @@ class HealthResponse(APIModel):
     database: str | None = None
 
 
+class SystemServiceStatus(APIModel):
+    status: Literal["normal", "not_started", "optional", "abnormal"]
+    label: str
+    detail: str
+    optional: bool = False
+
+
+class SystemStatusResponse(APIModel):
+    overall: Literal["ready", "degraded"]
+    checked_at: datetime
+    services: dict[str, SystemServiceStatus]
+    model_provider_name: str | None = None
+
+
 class LoginRequest(APIModel):
     username: str = Field(min_length=1, max_length=320)
     password: str = Field(min_length=1, max_length=512)
@@ -49,6 +73,18 @@ class RoleSummary(APIModel):
     permissions: list[str] = []
 
 
+class UserPreferences(APIModel):
+    experience_mode: Literal["beginner", "advanced"] = "beginner"
+    onboarding_complete: bool = False
+    onboarding_goal: Literal["learn", "scan", "both"] | None = None
+
+
+class UserPreferencesUpdate(APIModel):
+    experience_mode: Literal["beginner", "advanced"] | None = None
+    onboarding_complete: bool | None = None
+    onboarding_goal: Literal["learn", "scan", "both"] | None = None
+
+
 class UserResponse(ORMModel):
     username: str
     email: str
@@ -56,6 +92,7 @@ class UserResponse(ORMModel):
     is_active: bool
     is_superuser: bool
     roles: list[RoleSummary] = []
+    preferences: UserPreferences = Field(default_factory=UserPreferences)
 
 
 class UserCreate(APIModel):
@@ -167,6 +204,16 @@ class ModelChannelCreate(APIModel):
     temperature: float = Field(default=0.2, ge=0, le=2)
     enabled: bool = True
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    authorization_confirmed: bool = False
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: HttpUrl) -> HttpUrl:
+        if value.username or value.password:
+            raise ValueError("base_url 不允许包含用户凭据")
+        if value.query or value.fragment:
+            raise ValueError("base_url 不允许包含查询参数或片段")
+        return value
 
     @field_validator("extra_headers")
     @classmethod
@@ -194,6 +241,15 @@ class ModelChannelUpdate(APIModel):
     enabled: bool | None = None
     extra_headers: dict[str, str] | None = None
 
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: HttpUrl | None) -> HttpUrl | None:
+        if value is not None and (value.username or value.password):
+            raise ValueError("base_url 不允许包含用户凭据")
+        if value is not None and (value.query or value.fragment):
+            raise ValueError("base_url 不允许包含查询参数或片段")
+        return value
+
 
 class ModelChannelResponse(ORMModel):
     project_id: UUID | None
@@ -214,6 +270,98 @@ class ConnectionTestResponse(APIModel):
     message: str
     latency_ms: int
     status_code: int | None = None
+
+
+class WebsiteScanCreate(APIModel):
+    project_id: UUID | None = None
+    target_url: HttpUrl = Field(max_length=2048)
+    authorization_confirmed: Literal[True]
+    model_channel_id: UUID | None = None
+    generate_report: bool = True
+    safety_level: Literal["safe_read_only"] = "safe_read_only"
+
+
+class WebsiteScanAIRegenerate(APIModel):
+    model_channel_id: UUID | None = None
+
+
+class WebsiteScanCheck(APIModel):
+    id: str
+    name: str
+    status: Literal["passed", "warning", "failed", "info"]
+    severity: Literal["info", "low", "medium", "high", "critical"]
+    explanation: str
+    remediation: str | None = None
+
+
+class WebsiteScanAIStructuredOutput(APIModel):
+    """Strict, provider-independent output accepted from the optional AI explainer."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid", strict=True)
+
+    summary: str = Field(min_length=1, max_length=8000)
+    priorities: list[str] = Field(min_length=1, max_length=3)
+    limitations: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("summary", "limitations")
+    @classmethod
+    def strip_non_empty_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("text must not be blank")
+        return value
+
+    @field_validator("priorities")
+    @classmethod
+    def validate_priorities(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if any(not item or len(item) > 1000 for item in normalized):
+            raise ValueError("priority items must be non-empty and at most 1000 characters")
+        return normalized
+
+
+class WebsiteScanAIAnalysis(APIModel):
+    status: Literal["used", "degraded", "not_requested"]
+    model: str | None = None
+    summary: str | None = None
+    priorities: list[str] | None = None
+    limitations: str | None = None
+    error: str | None = None
+    failure_reason: (
+        Literal[
+            "channel_unavailable",
+            "invalid_response",
+            "provider_error",
+            "scope_denied",
+            "structured_output",
+            "timeout",
+            "transport_error",
+        ]
+        | None
+    ) = None
+    latency_ms: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
+class WebsiteScanResponse(ORMModel):
+    project_id: UUID
+    target_url: str
+    status: str
+    security_score: float
+    score_explanation: str
+    checks: list[WebsiteScanCheck]
+    finding_count: int
+    finding_ids: list[UUID]
+    evidence_id: UUID | None = None
+    report_id: UUID | None = None
+    ai_analysis: WebsiteScanAIAnalysis
+    latency_ms: int
+    model_channel_id: UUID | None
+    requested_by_id: UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    error_summary: str | None
 
 
 class AgentCreate(APIModel):
@@ -303,6 +451,12 @@ class MCPServerResponse(ORMModel):
     risk_level: str
     last_analyzed_at: datetime | None
     tool_count: int
+
+    @field_serializer("config")
+    def serialize_redacted_config(self, value: dict[str, Any]) -> dict[str, Any]:
+        """Protect reads of legacy rows as well as newly redacted writes."""
+
+        return redact(value)
 
 
 class MCPAnalysisResponse(APIModel):
@@ -511,6 +665,7 @@ class FindingUpdate(APIModel):
 class FindingResponse(ORMModel):
     project_id: UUID
     run_id: UUID | None
+    website_scan_id: UUID | None
     title: str
     category: str
     severity: str
@@ -542,6 +697,7 @@ class EvidenceResponse(ORMModel):
     project_id: UUID
     finding_id: UUID | None
     run_id: UUID | None
+    website_scan_id: UUID | None
     evidence_type: str
     title: str
     content: dict[str, Any]
@@ -563,6 +719,7 @@ class ReportCreate(APIModel):
 class ReportResponse(ORMModel):
     project_id: UUID
     run_id: UUID | None
+    website_scan_id: UUID | None
     name: str
     status: str
     formats: list[str]

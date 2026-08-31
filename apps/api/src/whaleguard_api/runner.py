@@ -29,6 +29,7 @@ from .scope_guard import ScopeDenied, guarded_request
 from .scoring import aggregate_scores, score_metrics
 
 logger = logging.getLogger("whaleguard.runner")
+AGENT_RESPONSE_MAX_BYTES = 1024 * 1024
 
 try:
     from whaleguard_worker.evaluator import evaluate_rules as shared_evaluate_rules
@@ -113,14 +114,36 @@ def _call_agent(db, run: TestRun, case: TestCase, agent: AgentTarget | None) -> 
             "test_case_id": case.case_key,
             "tool_calls": case.input_data.get("tool_calls", []),
         },
+        max_response_bytes=AGENT_RESPONSE_MAX_BYTES,
     )
     response.raise_for_status()
-    data = response.json()
+    try:
+        data = response.json()
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("Agent 返回的内容不是有效 JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Agent 响应必须是 JSON 对象")
     remote_status = str(data.get("status", "completed"))
     if remote_status == "failed":
         raise ValueError(str(data.get("summary") or data.get("output") or "Mock Agent 执行失败"))
-    metrics = data.get("metrics") or {}
-    policy_decisions = data.get("policy_decisions", [])[:500]
+    metrics = data.get("metrics")
+    if metrics is None:
+        metrics = {}
+    if not isinstance(metrics, dict):
+        raise ValueError("Agent 响应字段 metrics 必须是 JSON 对象")
+
+    def object_list(field: str) -> list[dict]:
+        value = data.get(field)
+        if value is None:
+            return []
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise ValueError(f"Agent 响应字段 {field} 必须是对象数组")
+        return value[:500]
+
+    policy_decisions = object_list("policy_decisions")
+    trace = object_list("trace")
+    tool_results = object_list("tool_results")
+    tool_calls = object_list("tool_calls") if data.get("tool_calls") is not None else tool_results
     if remote_status == "waiting_approval" and not policy_decisions:
         policy_decisions = [
             {
@@ -134,9 +157,9 @@ def _call_agent(db, run: TestRun, case: TestCase, agent: AgentTarget | None) -> 
         "status": remote_status,
         "output": str(data.get("output") or data.get("summary") or "")[:100_000],
         "summary": str(data.get("summary", ""))[:10_000],
-        "trace": data.get("trace", [])[:500],
-        "tool_calls": (data.get("tool_calls") or data.get("tool_results") or [])[:500],
-        "tool_results": data.get("tool_results", [])[:500],
+        "trace": trace,
+        "tool_calls": tool_calls,
+        "tool_results": tool_results,
         "policy_decisions": policy_decisions,
         "metrics": {
             "attack_success": bool(metrics.get("attack_success", False)),

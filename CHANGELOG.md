@@ -2,12 +2,52 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，并使用[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased] — v0.1.1 Hardening
+## [Unreleased]
 
-> 本节记录开发分支上的变化，不代表 v0.1.1 已发布。只有 [v0.1.1 发布门禁](docs/RELEASE.md) 全部通过后才能创建正式 tag。
+## [0.2.0] - 2026-09-01
+
+WhaleGuard AI RedLab v0.2.0 Beginner Experience / Academy 正式发布版本。
 
 ### Added
 
+- 增加默认 Beginner Mode、完整 Advanced Mode 和账号级体验偏好；首次登录通过 4 步 Onboarding 检查真实系统状态并直接进入第一课或网站体检。
+- 新手首页围绕“继续学习 / 检查我的网站 / 查看最近结果”，隐藏底层工程对象，同时保留高级工作台原有能力。
+- Academy 增加 10 个中文微课程、视觉学习路线、三级 Hint、独立完整解法、Attack Story、Vulnerable/Hardened 对照、受限鲸鱼导师、三题知识回顾、10 维技能进度和明确下一课。
+- 17 个场景使用独立 metadata 映射 OWASP GenAI LLM Top 10 2026 与 OWASP Top 10 for Agentic Applications 2026。
+- 增加新手 Finding 五问视图和折叠技术详情。
+- 增加面向新手的 API、Database、Redis、Worker、Labs 与 AI Provider 系统状态接口。
+
+### Changed
+
+- 网站体检简化为“输入网址 → 确认授权 → 安全只读检查 → 查看报告”；Project 与精确 URL Scope 可由向导安全创建，真实模型改为可选增强。
+- Windows 一键启动可识别并安全接管同一仓库的旧 Compose 项目，避免路径哈希项目与历史卷并存导致端口冲突。
+- Academy 的“重置本关”只重置易失实验状态，保留总进度、Session、Finding、Evidence、Report、Project 和 Docker volume。
+
+### Fixed
+
+- DeepSeek/OpenAI-compatible AI 解读支持 JSON Mode、代码围栏、JSON 前后文字和分段文本；使用严格 Pydantic Schema 分类脱敏解析失败，绝不覆盖确定性 Finding。
+- 增加“只重新生成 AI 解读”接口；不会重新请求被测网站。
+- Windows Docker Desktop 4.88.x 的受限陈旧零字节 AF_UNIX socket 可在严格归属验证后进行可恢复隔离，不删除用户数据或 volume。
+- SBOM/镜像清单在 Docker Desktop containerd 镜像存储下按 OCI index 对应的平台 manifest 验证运行容器，分别记录索引、manifest 与容器 config digest，不再把不同层级的合法 SHA-256 误判为镜像漂移。
+
+### Security
+
+- 新手网站向导仍要求明确授权、逐跳 Scope Guard 与 RBAC；默认仅允许安全只读级别，不扩大域名、路径或协议范围。
+- 自动项目、Scope、AI 重试、偏好修改和实验重置均写入审计；AI 错误和 Provider 响应保持脱敏。
+- Scope Guard 改为所有目标显式授权，loopback、RFC1918 与 ULA 也不再隐式放行；仅保留三个固定、只读且响应有界的内置健康检查例外，以及默认 Demo Lab 的三个精确 URL Scope。
+- MCP 配置与响应序列化统一执行规范化递归脱敏，覆盖大小写、Unicode、分隔符、`Authorization: Bearer`、赋值字符串和 `{name,value}` 结构，避免旧记录或替代字段形状回传敏感值。
+- AgentArena 响应限制为 1 MiB，并严格校验 JSON 对象、metrics 与 trace/tool 数组的嵌套类型；损坏、超限或结构异常的上游响应失败关闭。
+- 登录 `next` 参数使用稳定解码和本地绝对路径白名单，拒绝协议相对 URL、反斜杠、控制字符、超长值与多层编码外部跳转。
+- Windows Compose 项目接管新增当前仓库绑定的持久选择标记；即使新版 Compose 省略可选 environment-file 标签，仍必须通过工作目录、配置文件、服务拓扑和 volume 归属的完整匹配。
+
+## [0.1.1] - 2026-08-31
+
+WhaleGuard AI RedLab v0.1.1 Hardening 正式发布版本。
+
+### Added
+
+- 增加 WhaleGuard Academy Range：17 个 LLM/RAG/Agent/MCP 教学场景、Vulnerable/Hardened A/B、确定性事件判定、Attack Trace、Hint/Walkthrough、学习评分、动态 `WHALE_LAB_FAKE_*` canary、Reset/Replay，以及 Finding/Evidence/Report 闭环。
+- `mock-agent` 增加八个 Academy 私网逻辑组件：Agent、RAG、Vector DB、MCP Hub、Mock Tools、Fake Enterprise API、Mock Identity Provider 与 Internal Collector；全部使用 action allow-list 且不执行公网网络或 Shell。
 - 增加 `OutboxEvent`、`DeliveryReceipt` 和 `RunEvent` 数据模型，以及冻结的 `0001`、事件存储 `0002` 与 Outbox 所属关系 `0003` 迁移，为 at-least-once 投递、幂等消费和可分页事件流建立持久化基础。
 - `delivery_receipts` 使用 `(run_id, delivery_id)` 唯一约束并记录 payload hash；`run_events` 使用 `(run_id, sequence)` 唯一约束，Outbox 增加调度与聚合查询索引。
 - 增加事务提交后的 Outbox dispatcher 与周期泵；Redis 暂时不可用时事件保持 `pending`，按有界退避重新投递。
@@ -41,11 +81,13 @@
 
 ### Security
 
+- Academy 拒绝高置信度真实凭证格式且校验错误不回显输入；场景执行不接受目标 URL，Collector 只记录虚构训练标记，Docker `arena` 仍为 internal 且 Mock 服务不发布宿主端口。
 - 所有 GitHub Actions 使用只读顶层权限、job timeout 和完整 commit SHA 固定第三方 Action；策略检查拒绝 `pull_request_target`、仓库 secrets 引用和浮动 Action 标签。
 - Trivy 采用 deny-by-default；当前唯一例外是 `apps/api/Dockerfile` 上有负责人、影响说明和到期日的路径级 DS-0031 误报。其余未忽略的 High/Critical 阻断，Medium/Low、Secret、许可证与完整审计报告继续保留。
 
 ### Documentation
 
+- 增加 Academy 17 关状态表、架构、安全边界、API、评分规则、第一关流程与验收命令。
 - 增加 v0.1.1 发布手册、阻断式验收清单、GitHub PR/Release 模板和自动生成 Release Notes 的分类配置。
 - README 第一屏改为产品定位、稳定基线、最短启动方式与真实界面预览。
 - 演示指南增加可复用的 5 分钟讲解节奏、演示前检查和不夸大现场状态的规则。

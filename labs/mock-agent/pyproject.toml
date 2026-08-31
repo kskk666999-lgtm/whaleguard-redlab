@@ -1,6 +1,6 @@
 [project]
 name = "whaleguard-mock-agent"
-version = "0.1.1"
+version = "0.2.0"
 description = "Transparent allow-listed local agent for WhaleGuard AgentArena"
 requires-python = ">=3.11"
 dependencies = [

@@ -1,8 +1,24 @@
 "use client";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { CheckCircle2, CircleAlert, Info, X } from "lucide-react";
+import { getUserPreferences, patchUserPreferences } from "@/lib/api";
+import { getToken } from "@/lib/auth";
+import type {
+  ExperienceMode,
+  UserPreferences,
+  UserPreferencesUpdate,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Theme = "dark" | "light";
@@ -11,6 +27,13 @@ type AppContextValue = {
   theme: Theme;
   toggleTheme: () => void;
   toast: (value: Omit<Toast, "id">) => void;
+  preferences: UserPreferences | null;
+  experienceMode: ExperienceMode;
+  preferencesLoading: boolean;
+  preferencesReady: boolean;
+  preferencesError: string | null;
+  syncPreferences: () => Promise<UserPreferences | null>;
+  updatePreferences: (value: UserPreferencesUpdate) => Promise<UserPreferences>;
 };
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -30,6 +53,11 @@ export function Providers({ children }: { children: ReactNode }) {
   }));
   const [theme, setTheme] = useState<Theme>("dark");
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [preferences, setPreferences] = useState<UserPreferences | null>(null);
+  const [preferencesLoading, setPreferencesLoading] = useState(false);
+  const [preferencesReady, setPreferencesReady] = useState(false);
+  const [preferencesError, setPreferencesError] = useState<string | null>(null);
+  const preferencesRequest = useRef<Promise<UserPreferences | null> | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("whaleguard.theme") as Theme | null;
@@ -53,7 +81,97 @@ export function Providers({ children }: { children: ReactNode }) {
     window.setTimeout(() => setToasts((current) => current.filter((item) => item.id !== id)), 4200);
   }, []);
 
-  const context = useMemo(() => ({ theme, toggleTheme, toast }), [theme, toggleTheme, toast]);
+  const syncPreferences = useCallback((): Promise<UserPreferences | null> => {
+    if (!getToken()) {
+      setPreferences(null);
+      setPreferencesError(null);
+      setPreferencesLoading(false);
+      setPreferencesReady(true);
+      return Promise.resolve(null);
+    }
+    if (preferencesRequest.current) return preferencesRequest.current;
+
+    setPreferencesLoading(true);
+    setPreferencesReady(false);
+    setPreferencesError(null);
+    const request = getUserPreferences()
+      .then((value) => {
+        setPreferences(value);
+        return value;
+      })
+      .catch((error: unknown) => {
+        setPreferencesError(error instanceof Error ? error.message : "无法读取体验设置");
+        throw error;
+      })
+      .finally(() => {
+        preferencesRequest.current = null;
+        setPreferencesLoading(false);
+        setPreferencesReady(true);
+      });
+    preferencesRequest.current = request;
+    return request;
+  }, []);
+
+  const updatePreferences = useCallback(
+    async (value: UserPreferencesUpdate): Promise<UserPreferences> => {
+      setPreferencesLoading(true);
+      setPreferencesError(null);
+      try {
+        const updated = await patchUserPreferences(value);
+        setPreferences(updated);
+        setPreferencesReady(true);
+        return updated;
+      } catch (error) {
+        setPreferencesError(error instanceof Error ? error.message : "无法保存体验设置");
+        throw error;
+      } finally {
+        setPreferencesLoading(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const handleSession = () => {
+      if (!getToken()) {
+        setPreferences(null);
+        setPreferencesError(null);
+        setPreferencesLoading(false);
+        setPreferencesReady(true);
+        return;
+      }
+      void syncPreferences().catch(() => undefined);
+    };
+    handleSession();
+    window.addEventListener("whaleguard:session", handleSession);
+    return () => window.removeEventListener("whaleguard:session", handleSession);
+  }, [syncPreferences]);
+
+  const context = useMemo(
+    () => ({
+      theme,
+      toggleTheme,
+      toast,
+      preferences,
+      experienceMode: preferences?.experience_mode || "beginner",
+      preferencesLoading,
+      preferencesReady,
+      preferencesError,
+      syncPreferences,
+      updatePreferences,
+    }),
+    [
+      theme,
+      toggleTheme,
+      toast,
+      preferences,
+      preferencesLoading,
+      preferencesReady,
+      preferencesError,
+      syncPreferences,
+      updatePreferences,
+    ],
+  );
 
   return (
     <QueryClientProvider client={client}>

@@ -47,3 +47,9 @@ The API run engine can call `POST /tasks` on `mock-agent` with
 When `MOCK_LLM_URL` is configured, a completed safe tool run is summarized by
 the local mock LLM; the URL is deployment-owned, allow-listed, and never read
 from task input.
+
+`mock-agent` 还承载 Academy Range 的八个私网逻辑组件。`GET /academy/metadata`
+只返回组件清单和安全声明，不返回动态 fake secret；受限测试端点为
+`POST /academy/components/{component}/invoke`。每个 component 只接受一个固定
+action，不接收目标 URL，不调用 Shell，不持久化数据，也不产生公网网络请求。
+Internal Collector 仅接受 `WHALE_LAB_FAKE_*` 标记并最多保留 64 条进程内分类记录。

@@ -6,7 +6,7 @@ on:
       version:
         description: Candidate version label; this workflow never creates a tag or release
         required: true
-        default: v0.1.1
+        default: v0.2.0
         type: string
 
 permissions:

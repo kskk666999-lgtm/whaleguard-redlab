@@ -76,6 +76,7 @@ class User(UUIDTimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    preferences: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     roles: Mapped[list[Role]] = relationship(
         secondary=user_roles, back_populates="users", lazy="selectin"
     )
@@ -404,6 +405,34 @@ class TestResult(UUIDTimestampMixin, Base):
     latency_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
+class WebsiteScan(UUIDTimestampMixin, Base):
+    __tablename__ = "website_scans"
+    __table_args__ = (
+        Index("ix_website_scans_project_status", "project_id", "status"),
+        Index("ix_website_scans_project_created", "project_id", "created_at"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    target_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    security_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    score_explanation: Mapped[str] = mapped_column(Text, default="尚未开始体检。", nullable=False)
+    checks: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    ai_analysis: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    model_channel_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("model_channels.id", ondelete="SET NULL")
+    )
+    requested_by_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_summary: Mapped[str | None] = mapped_column(Text)
+
+
 class Finding(UUIDTimestampMixin, Base):
     __tablename__ = "findings"
     __table_args__ = (
@@ -416,6 +445,9 @@ class Finding(UUIDTimestampMixin, Base):
     )
     run_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("test_runs.id", ondelete="SET NULL")
+    )
+    website_scan_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("website_scans.id", ondelete="SET NULL"), index=True
     )
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     category: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -449,6 +481,9 @@ class Evidence(UUIDTimestampMixin, Base):
     run_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("test_runs.id", ondelete="SET NULL")
     )
+    website_scan_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("website_scans.id", ondelete="SET NULL"), index=True
+    )
     evidence_type: Mapped[str] = mapped_column(String(60), nullable=False)
     title: Mapped[str] = mapped_column(String(240), nullable=False)
     content: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
@@ -471,6 +506,9 @@ class Report(UUIDTimestampMixin, Base):
     )
     run_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("test_runs.id", ondelete="SET NULL")
+    )
+    website_scan_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("website_scans.id", ondelete="SET NULL"), index=True
     )
     name: Mapped[str] = mapped_column(String(240), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="draft", nullable=False)
@@ -558,4 +596,89 @@ class SystemSetting(UUIDTimestampMixin, Base):
     is_secret: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     updated_by_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class AcademyLabState(UUIDTimestampMixin, Base):
+    __tablename__ = "academy_lab_states"
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", name="uq_academy_lab_state_project_user"),
+        Index("ix_academy_lab_state_project_user", "project_id", "user_id"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    seed_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    fake_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    memory: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class AcademySession(UUIDTimestampMixin, Base):
+    __tablename__ = "academy_sessions"
+    __table_args__ = (
+        Index("ix_academy_sessions_user_scenario", "user_id", "scenario_id"),
+        Index("ix_academy_sessions_project_created", "project_id", "created_at"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    scenario_id: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    attack_detected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    exploit_success: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    defense_success: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    score_awarded: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    events: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    canary_flows: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    replay_of_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("academy_sessions.id", ondelete="SET NULL")
+    )
+    finding_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("findings.id", ondelete="SET NULL")
+    )
+    evidence_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("evidence.id", ondelete="SET NULL")
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AcademyProgress(UUIDTimestampMixin, Base):
+    __tablename__ = "academy_progress"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "user_id", "scenario_id", name="uq_academy_progress_project_user_scenario"
+        ),
+        Index("ix_academy_progress_user_updated", "user_id", "updated_at"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    scenario_id: Mapped[str] = mapped_column(String(8), nullable=False)
+    exploit_complete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    evidence_complete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    mitigation_complete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    hardened_complete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    hints_used: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
+    mitigation_choice: Mapped[str | None] = mapped_column(String(80))
+    score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    best_session_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("academy_sessions.id", ondelete="SET NULL")
+    )
+    last_session_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("academy_sessions.id", ondelete="SET NULL")
     )

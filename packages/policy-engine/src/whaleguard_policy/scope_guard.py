@@ -107,8 +107,6 @@ class ScopeGuard:
 
         active = [scope for scope in self.scopes if scope.is_active(self._now())]
         matched = self._matching_scope(hostname, addresses, context.request_type, active)
-        default_allowed = all(self._is_default_allowed(ip) for ip in addresses)
-
         if matched:
             unsafe_answers = [
                 str(ip)
@@ -137,12 +135,9 @@ class ScopeGuard:
                 )
             return self._allow(target, context, addresses, matched.value)
 
-        if default_allowed:
-            return self._allow(target, context, addresses, "default-private-policy")
-
         return self._deny(
             "target_out_of_scope",
-            "目标包含未授权公网地址或不在项目 Scope 内",
+            "目标不在项目已确认的 Scope 内",
             target,
             context,
             resolved=addresses,

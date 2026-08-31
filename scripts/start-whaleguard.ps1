@@ -6,6 +6,8 @@ param(
 . (Join-Path $PSScriptRoot "whaleguard-common.ps1")
 $root = Get-WgRoot
 $exitCode = 0
+$composeProject = ""
+$restoreExistingStackOnFailure = $false
 $null = Start-WgOperationLog -Name "start"
 Push-Location $root
 try {
@@ -15,10 +17,25 @@ try {
     Write-WgMessage -Message "[2/5] Preparing persistent local secrets..." -Color "Cyan"
     $null = Ensure-WgEnvironment
     Write-WgMessage -Message "[3/5] Validating Compose configuration..." -Color "Cyan"
-    Invoke-WgCompose -Arguments @("config", "--quiet")
-    $composeProject = Get-WgComposeProjectName
     $docker = Get-WgDocker
     $dockerTarget = Get-WgLocalDockerTarget -Docker $docker
+    $composeProject = Resolve-WgComposeProjectName `
+        -Docker $docker -Endpoint $dockerTarget.Endpoint
+    $null = Save-WgComposeProjectSelection -ProjectName $composeProject
+    $selectedInventory = Get-WgComposeProjectInventory `
+        -Docker $docker `
+        -Endpoint $dockerTarget.Endpoint `
+        -ProjectName $composeProject
+    $restoreExistingStackOnFailure = (
+        $selectedInventory.Exists -and $selectedInventory.OwnedByCurrentRoot
+    )
+    Invoke-WgCompose -Arguments @("config", "--quiet") -ProjectName $composeProject
+    if ($composeProject -eq (Get-WgLegacyComposeProjectName)) {
+        Write-WgMessage -Message "Recovered the existing verified WhaleGuard stack and its retained data." -Color "Green"
+    }
+    else {
+        Write-WgMessage -Message "Using the checkout-scoped WhaleGuard stack: $composeProject"
+    }
     $dockerPlugin = Get-WgTrustedDockerPluginConfig
     $migration = Invoke-WgRedisVolumeMigration `
         -Docker $docker `
@@ -30,14 +47,18 @@ try {
     # Pass Compose switches through the explicit array parameter. PowerShell
     # otherwise consumes `-d` as the common -Debug parameter before the wrapper
     # can forward it to Docker Compose.
-    Invoke-WgCompose -Arguments @("up", "-d", "--build")
+    Invoke-WgCompose -Arguments @("up", "-d", "--build") -ProjectName $composeProject
 
     $apiPort = Get-WgEnvValue -Name "API_PORT" -Default "8000"
     $webPort = Get-WgEnvValue -Name "WEB_PORT" -Default "3000"
     $webUrl = "http://127.0.0.1:$webPort"
     Write-WgMessage -Message "[5/5] Waiting for all eight services and API readiness..." -Color "Cyan"
-    $null = Wait-WgStackHealthy -ApiPort ([int]$apiPort) -WebPort ([int]$webPort) -TimeoutSeconds $TimeoutSeconds
-    Invoke-WgCompose -Arguments @("ps")
+    $null = Wait-WgStackHealthy `
+        -ApiPort ([int]$apiPort) `
+        -WebPort ([int]$webPort) `
+        -ProjectName $composeProject `
+        -TimeoutSeconds $TimeoutSeconds
+    Invoke-WgCompose -Arguments @("ps") -ProjectName $composeProject
 
     $credentials = Join-Path $root ".local\first-run-credentials.txt"
     Write-WgMessage -Message ""
@@ -59,7 +80,16 @@ try {
 catch {
     $exitCode = 1
     Write-WgMessage -Message "START FAILED: $($_.Exception.Message)" -Level "ERROR" -Color "Red"
-    Write-WgComposeDiagnostics -Tail 80
+    if ($restoreExistingStackOnFailure -and $composeProject) {
+        try {
+            Invoke-WgCompose -Arguments @("up", "-d") -ProjectName $composeProject
+            Write-WgMessage -Message "The previously existing WhaleGuard stack was restored without rebuilding images." -Level "WARN" -Color "Yellow"
+        }
+        catch {
+            Write-WgMessage -Message "The previously existing stack could not be restored automatically: $($_.Exception.Message)" -Level "ERROR" -Color "Red"
+        }
+    }
+    Write-WgComposeDiagnostics -Tail 80 -ProjectName $composeProject
     Write-WgMessage -Message "Operation log: $(Get-WgOperationLogPath)" -Level "ERROR"
 }
 finally {

@@ -10,28 +10,43 @@ import { Input, Label } from "@/components/ui/input";
 import { login } from "@/lib/api";
 import { saveSession } from "@/lib/auth";
 import { loginInputSchema } from "@/lib/schemas";
+import { safeInternalPath } from "@/lib/navigation";
 import { useApp } from "@/components/providers";
 
 function LoginPageContent() {
   const router = useRouter();
   const params = useSearchParams();
-  const { toast } = useApp();
+  const { syncPreferences, toast } = useApp();
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const mutation = useMutation({
     mutationFn: () => login(username, password),
-    onSuccess: (result) => {
+    onSuccess: async (result) => {
       saveSession(result.access_token, result.csrf_token, {
         id: result.user.id,
         username: result.user.username,
         display_name: result.user.display_name,
         role: result.user.role,
       });
+      let onboardingComplete = false;
+      try {
+        const preferences = await syncPreferences();
+        onboardingComplete = Boolean(preferences?.onboarding_complete);
+      } catch {
+        toast({
+          title: "登录成功，但体验设置暂未同步",
+          description: "请在引导页重试；不会影响本地安全数据。",
+          tone: "info",
+        });
+        router.replace("/onboarding");
+        return;
+      }
       toast({ title: "登录成功", description: "已建立受保护的本地会话。", tone: "success" });
       const next = params.get("next");
-      router.replace(next?.startsWith("/") && !next.startsWith("//") ? next : "/dashboard");
+      const safeNext = safeInternalPath(next);
+      router.replace(onboardingComplete ? safeNext : "/onboarding");
     },
   });
 

@@ -14,10 +14,14 @@ from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .academy import create_academy_router
+
 SERVICE_NAME = "whaleguard-mock-agent"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.2.0"
 MAX_MCP_RESPONSE_BYTES = 64 * 1024
 PRIVATE_SERVICE_NETWORKS = tuple(
     ipaddress.ip_network(cidr)
@@ -72,6 +76,59 @@ KNOWLEDGE_BASE: list[dict[str, Any]] = [
         "tags": ["agentarena", "fixture", "local"],
     },
 ]
+
+DEMO_SITE_HTML = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>鲸湾书屋 · 被动体检演示站</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #eef4f7; color: #173042; }
+    main { width: min(880px, calc(100% - 32px)); margin: 48px auto; }
+    header, section {
+      background: #fff; border: 1px solid #cbd9e2; border-radius: 12px;
+      padding: 24px; margin-bottom: 18px;
+    }
+    h1, h2 { margin-top: 0; }
+    .badge {
+      display: inline-block; padding: 5px 10px; border-radius: 999px;
+      background: #d9edf1; color: #0f5968; font-weight: 700;
+    }
+    .notice { border-left: 4px solid #cc7a00; padding-left: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; border-bottom: 1px solid #dbe5eb; padding: 10px 6px; }
+    footer { color: #526978; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <span class="badge">LOCAL PASSIVE LAB</span>
+      <h1>鲸湾书屋</h1>
+      <p>这是 WhaleGuard Docker 私有网络中的虚构网站体检样本。</p>
+      <p class="notice">
+        页面只用于检查响应头与非敏感演示 Cookie 的安全加固状态，
+        不包含登录、支付、上传或用户数据。
+      </p>
+    </header>
+    <section>
+      <h2>今日虚构书单</h2>
+      <table>
+        <thead><tr><th>编号</th><th>书名</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td>DEMO-101</td><td>《蓝鲸与纸船》</td><td>演示可借</td></tr>
+          <tr><td>DEMO-205</td><td>《安全边界小记》</td><td>演示在架</td></tr>
+          <tr><td>DEMO-309</td><td>《私有网络漫游》</td><td>演示预约</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <footer>虚构联系人：lab-contact@example.invalid · 不对应任何真实个人或组织</footer>
+  </main>
+</body>
+</html>
+"""
 
 
 class ToolCallSpec(BaseModel):
@@ -482,11 +539,49 @@ def create_app() -> FastAPI:
         version=APP_VERSION,
         description="Transparent allow-listed agent for private AgentArena evaluation.",
     )
+    app.include_router(create_academy_router())
+
+    @app.exception_handler(RequestValidationError)
+    async def sanitized_validation_error(
+        _request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        errors = [
+            {key: value for key, value in error.items() if key not in {"input", "ctx", "url"}}
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": errors})
 
     @app.get("/health", tags=["system"])
     @app.get("/healthz", tags=["system"], include_in_schema=False)
     async def healthz() -> dict[str, str]:
         return {"status": "healthy", "service": SERVICE_NAME, "version": APP_VERSION}
+
+    @app.get(
+        "/demo-site",
+        response_class=HTMLResponse,
+        tags=["passive-security-lab"],
+        summary="Return the fictional passive website-inspection fixture",
+    )
+    async def demo_site() -> HTMLResponse:
+        """Serve a static, non-sensitive page with intentional passive findings.
+
+        The response intentionally omits common browser-hardening headers and
+        sets a short-lived display-preference cookie without Secure or HttpOnly.
+        It accepts no input and exposes no state-changing or privileged action.
+        """
+
+        response = HTMLResponse(DEMO_SITE_HTML)
+        response.set_cookie(
+            key="wg_demo_theme",
+            value="ocean",
+            max_age=900,
+            path="/demo-site",
+            secure=False,
+            httponly=False,
+            samesite="lax",
+        )
+        return response
 
     @app.get("/v1/capabilities", tags=["agent"])
     async def capabilities() -> dict[str, Any]:

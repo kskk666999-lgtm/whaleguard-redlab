@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
-import posixpath
 import socket
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 from uuid import UUID
 
 import httpx
@@ -41,6 +40,23 @@ RFC1918 = (
     ipaddress.ip_network("192.168.0.0/16"),
 )
 IPV6_PRIVATE = ipaddress.ip_network("fc00::/7")
+BUNDLED_HEALTH_PROBE_URLS = frozenset(
+    {
+        "http://mock-agent:8102/health",
+        "http://mock-llm:8101/health",
+        "http://mock-mcp-server:8103/health",
+    }
+)
+KNOWN_METADATA_HOSTS = {
+    "metadata",
+    "metadata.google.internal",
+    "instance-data.ec2.internal",
+}
+KNOWN_METADATA_IPS = {
+    ipaddress.ip_address("169.254.169.254"),
+    ipaddress.ip_address("100.100.100.200"),
+    ipaddress.ip_address("fd00:ec2::254"),
+}
 
 
 class ScopeDenied(ValueError):
@@ -72,6 +88,20 @@ def is_default_allowed_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address
     if isinstance(address, ipaddress.IPv4Address):
         return any(address in network for network in RFC1918)
     return address in IPV6_PRIVATE
+
+
+def is_permanently_blocked_ip(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    """Block address classes that must never become reachable through a user scope."""
+
+    return bool(
+        address in KNOWN_METADATA_IPS
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+        or (address.is_reserved and not address.is_loopback)
+    )
 
 
 def resolve_host(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
@@ -113,25 +143,31 @@ def _domain_matches(pattern: str, host: str) -> bool:
     return host == pattern
 
 
-def _normalized_url_path(value: str) -> str:
-    path = value or "/"
-    for _ in range(3):
-        decoded = unquote(path)
-        if decoded == path:
-            break
-        path = decoded
-    if "\x00" in path:
-        return ""
-    normalized = posixpath.normpath(path.replace("\\", "/"))
-    return normalized if normalized.startswith("/") else f"/{normalized}"
-
-
 def _path_scope_matches(authorized_path: str, candidate_path: str) -> bool:
-    authorized = _normalized_url_path(authorized_path).rstrip("/") or "/"
-    candidate = _normalized_url_path(candidate_path)
-    if not authorized or not candidate:
-        return False
-    return authorized == "/" or candidate == authorized or candidate.startswith(f"{authorized}/")
+    # Exact URL scopes intentionally compare the transmitted path spelling.
+    # Decoding or normalizing here can collapse distinct proxy/backend routes
+    # (for example /a//b, /a/%62, or /a\\b) into the same authorization.
+    return (candidate_path or "/") == (authorized_path or "/")
+
+
+def _effective_url_port(value) -> int | None:
+    if value.port is not None:
+        return value.port
+    return {"http": 80, "https": 443}.get(value.scheme.lower())
+
+
+def _url_scope_matches(authorized_url: str, candidate_url: str) -> bool:
+    authorized = urlsplit(authorized_url)
+    candidate = urlsplit(candidate_url)
+    return (
+        authorized.scheme.lower() == candidate.scheme.lower()
+        and (authorized.hostname or "").rstrip(".").lower()
+        == (candidate.hostname or "").rstrip(".").lower()
+        and _effective_url_port(authorized) == _effective_url_port(candidate)
+        and _path_scope_matches(authorized.path, candidate.path)
+        and authorized.query == candidate.query
+        and authorized.fragment == candidate.fragment
+    )
 
 
 def _scope_matches(
@@ -149,13 +185,7 @@ def _scope_matches(
         if scope.target_type == "domain":
             return _domain_matches(scope.target_value, host)
         if scope.target_type == "url":
-            authorized = urlsplit(scope.target_value)
-            candidate = urlsplit(url)
-            return (
-                authorized.scheme.lower() == candidate.scheme.lower()
-                and (authorized.hostname or "").lower() == (candidate.hostname or "").lower()
-                and _path_scope_matches(authorized.path, candidate.path)
-            )
+            return _url_scope_matches(scope.target_value, url)
     except ValueError:
         return False
     return False
@@ -168,6 +198,7 @@ def evaluate_url(
     request_type: str | None = None,
     tool_risk_level: str = "low",
     has_approval: bool = False,
+    allow_bundled_health_probe: bool = False,
 ) -> ScopeDecision:
     try:
         parsed = urlsplit(url)
@@ -179,6 +210,8 @@ def evaluate_url(
         if not parsed.hostname:
             raise ScopeDenied("URL 缺少主机名")
         host = parsed.hostname.rstrip(".").lower()
+        if host in KNOWN_METADATA_HOSTS:
+            raise ScopeDenied("永久阻止云元数据服务目标")
         if host in {"0", "0.0.0.0", "::", "[::]"}:
             raise ScopeDenied("不允许未指定地址")
         try:
@@ -188,7 +221,24 @@ def evaluate_url(
         if port is not None and not 1 <= port <= 65535:
             raise ScopeDenied("端口无效")
         addresses = resolve_host(host)
+        if any(is_permanently_blocked_ip(address) for address in addresses):
+            raise ScopeDenied("目标解析到永久禁止的链路本地、元数据或保留地址")
         effective_type = request_type or scheme
+        if allow_bundled_health_probe:
+            if (
+                project_id is not None
+                or url not in BUNDLED_HEALTH_PROBE_URLS
+                or not all(is_default_allowed_ip(address) for address in addresses)
+            ):
+                raise ScopeDenied("内部健康探针仅允许固定的 Docker 私网本地靶场端点")
+            return ScopeDecision(
+                allowed=True,
+                reason="固定本地靶场健康探针通过校验",
+                url=url,
+                normalized_host=host,
+                resolved_ips=[str(address) for address in addresses],
+                risk_level=tool_risk_level,
+            )
         now = datetime.now(UTC)
         scopes = []
         if project_id is not None:
@@ -206,13 +256,7 @@ def evaluate_url(
                 kind = scope.target_type
                 if kind == "url":
                     target_parts = urlsplit(value)
-                    candidate_parts = urlsplit(url)
-                    if not (
-                        target_parts.scheme.lower() == candidate_parts.scheme.lower()
-                        and (target_parts.hostname or "").lower()
-                        == (candidate_parts.hostname or "").lower()
-                        and _path_scope_matches(target_parts.path, candidate_parts.path)
-                    ):
+                    if not _url_scope_matches(value, url):
                         continue
                     value = target_parts.hostname or ""
                     kind = "domain"
@@ -229,7 +273,7 @@ def evaluate_url(
             shared_decision = SharedScopeGuard(shared_scopes).check_url(
                 url,
                 SharedRequestContext(
-                    project_id=str(project_id or "default-private-policy"),
+                    project_id=str(project_id or "no-project-scope"),
                     request_type=effective_type,
                     tool_risk=SharedRiskLevel(tool_risk_level),
                     requires_approval=tool_risk_level in {"high", "critical"},
@@ -253,8 +297,6 @@ def evaluate_url(
             )
         matched_ids: set[str] = set()
         for address in addresses:
-            if is_default_allowed_ip(address):
-                continue
             matches = [
                 scope for scope in active_scopes if _scope_matches(scope, host, address, url)
             ]
@@ -352,11 +394,29 @@ def guarded_request(
     max_redirects: int = 3,
     request_id: str | None = None,
     json_body: dict | None = None,
+    max_response_bytes: int | None = None,
+    allow_bundled_health_probe: bool = False,
 ) -> httpx.Response:
+    if allow_bundled_health_probe and (
+        method.upper() != "GET"
+        or project_id is not None
+        or url not in BUNDLED_HEALTH_PROBE_URLS
+        or headers
+        or json_body is not None
+        or max_redirects != 0
+        or max_response_bytes is None
+        or max_response_bytes > 8192
+    ):
+        raise ValueError("内部健康探针参数超出固定安全边界")
     current_url = url
     original_origin = None
     for redirect_count in range(max_redirects + 1):
-        decision = evaluate_url(db, current_url, project_id)
+        decision = evaluate_url(
+            db,
+            current_url,
+            project_id,
+            allow_bundled_health_probe=allow_bundled_health_probe,
+        )
         log_policy_decision(db, decision, project_id, request_id)
         db.commit()
         if not decision.allowed:
@@ -374,14 +434,42 @@ def guarded_request(
         request_headers["Host"] = original_url.netloc.decode("ascii")
         extensions = {"sni_hostname": original_url.raw_host.decode("ascii")}
         with httpx.Client(follow_redirects=False, timeout=timeout, trust_env=False) as client:
-            response = client.request(
-                method,
-                pinned_url,
-                headers=request_headers,
-                json=json_body,
-                extensions=extensions,
-            )
-        post_decision = evaluate_url(db, current_url, project_id)
+            if max_response_bytes is None:
+                response = client.request(
+                    method,
+                    pinned_url,
+                    headers=request_headers,
+                    json=json_body,
+                    extensions=extensions,
+                )
+            else:
+                if max_response_bytes < 1:
+                    raise ValueError("max_response_bytes 必须大于零")
+                with client.stream(
+                    method,
+                    pinned_url,
+                    headers=request_headers,
+                    json=json_body,
+                    extensions=extensions,
+                ) as streamed:
+                    body = bytearray()
+                    for chunk in streamed.iter_bytes():
+                        body.extend(chunk)
+                        if len(body) > max_response_bytes:
+                            raise ScopeDenied("响应正文超过允许大小")
+                    response = httpx.Response(
+                        status_code=streamed.status_code,
+                        headers=streamed.headers,
+                        content=bytes(body),
+                        request=streamed.request,
+                        extensions=streamed.extensions,
+                    )
+        post_decision = evaluate_url(
+            db,
+            current_url,
+            project_id,
+            allow_bundled_health_probe=allow_bundled_health_probe,
+        )
         log_policy_decision(db, post_decision, project_id, request_id)
         db.commit()
         if not post_decision.allowed or post_decision.resolved_ips != decision.resolved_ips:

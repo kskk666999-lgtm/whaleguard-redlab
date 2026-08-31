@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Iterable
@@ -26,6 +27,8 @@ LOCAL_DOCKER_HOSTS = frozenset(
         "unix:///var/run/docker.sock",
     }
 )
+SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+PLATFORM_COMPONENT = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 def canonical_project_name(root: Path = ROOT) -> str:
@@ -289,16 +292,63 @@ def _runtime_containers(
             or labels.get("com.docker.compose.service") != service
         ):
             raise RuntimeError(f"Container {container_id} is not owned by {project_name}/{service}")
+        if not SHA256_DIGEST.fullmatch(actual_image_id) or not SHA256_DIGEST.fullmatch(
+            expected_image_id
+        ):
+            raise RuntimeError(f"Docker returned an invalid image digest for {service}")
+
+        runtime_manifest_digest: str | None = None
+        platform: str | None = None
+        match_strategy = "legacy_image_id"
         if actual_image_id != expected_image_id:
-            raise RuntimeError(
-                f"Running {service} container {container_id} uses {actual_image_id}, "
-                f"but the image selected for scanning is {expected_image_id}"
+            descriptor = inspection.get("ImageManifestDescriptor")
+            try:
+                runtime_manifest_digest = str(descriptor["digest"])
+                platform_record = descriptor["platform"]
+                operating_system = str(platform_record["os"]).lower()
+                architecture = str(platform_record["architecture"]).lower()
+                variant = str(platform_record.get("variant", "")).lower()
+            except (KeyError, TypeError) as exc:
+                raise RuntimeError(
+                    f"Running {service} container {container_id} uses {actual_image_id}, "
+                    f"but the image selected for scanning is {expected_image_id}"
+                ) from exc
+            components = [operating_system, architecture]
+            if variant:
+                components.append(variant)
+            if not SHA256_DIGEST.fullmatch(runtime_manifest_digest) or any(
+                not PLATFORM_COMPONENT.fullmatch(item) for item in components
+            ):
+                raise RuntimeError(f"Docker returned invalid platform metadata for {service}")
+            platform = "/".join(components)
+            selected_manifest_digest = _capture(
+                [
+                    *_command_prefix(docker),
+                    "image",
+                    "inspect",
+                    "--platform",
+                    platform,
+                    "--format",
+                    "{{.Id}}",
+                    expected_image_id,
+                ]
             )
+            if selected_manifest_digest != runtime_manifest_digest:
+                raise RuntimeError(
+                    f"Running {service} container {container_id} uses manifest "
+                    f"{runtime_manifest_digest}, but the image selected for scanning resolves "
+                    f"to {selected_manifest_digest} for {platform}"
+                )
+            match_strategy = "oci_manifest_descriptor"
         records.append(
             {
                 "container_id": str(inspection.get("Id", container_id)),
                 "configured_reference": configured_reference,
                 "image_id": actual_image_id,
+                "selected_image_id": expected_image_id,
+                "runtime_manifest_digest": runtime_manifest_digest or actual_image_id,
+                "platform": platform or "legacy",
+                "match_strategy": match_strategy,
             }
         )
     return records
@@ -340,7 +390,7 @@ def resolve_compose_images(
             raise RuntimeError(f"Compose service was not found: {service}")
         reference = str(service_config.get("image") or f"{project}-{service}")
         image_id = _capture([*docker, "image", "inspect", "--format", "{{.Id}}", reference])
-        if not image_id.startswith("sha256:"):
+        if not SHA256_DIGEST.fullmatch(image_id):
             raise RuntimeError(f"Compose image is unavailable for {service}: {reference}")
         containers = _runtime_containers(
             docker,
@@ -364,7 +414,7 @@ def write_inventory(
     docker_toolchain: dict[str, Any] | None = None,
 ) -> None:
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "compose_project": project_name,
         "services": services,
     }

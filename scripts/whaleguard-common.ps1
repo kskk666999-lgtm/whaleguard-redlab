@@ -1203,19 +1203,378 @@ function Get-WgComposeProjectName {
     return "whaleguard-redlab-$suffix"
 }
 
+function Get-WgLegacyComposeProjectName {
+    return "whaleguard-redlab"
+}
+
+function Assert-WgManagedComposeProjectName {
+    param([Parameter(Mandatory = $true)][string]$ProjectName)
+
+    if ($ProjectName -notin @((Get-WgComposeProjectName), (Get-WgLegacyComposeProjectName))) {
+        throw "Compose project selection is outside the two WhaleGuard identities managed by this checkout."
+    }
+}
+
+function Get-WgComposeSelectionDirectory {
+    $localAppData = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::LocalApplicationData
+    )
+    if (-not $localAppData) {
+        throw "LOCALAPPDATA could not be resolved for Compose project selection."
+    }
+    $resolvedLocalAppData = [IO.Path]::GetFullPath($localAppData)
+    Assert-WgNoReparsePointInPath -Path $resolvedLocalAppData
+    return [IO.Path]::GetFullPath(
+        (Join-Path $resolvedLocalAppData "WhaleGuardRedLab\ComposeProjects")
+    )
+}
+
+function Get-WgComposeSelectionPath {
+    $canonicalName = Get-WgComposeProjectName
+    Assert-WgManagedComposeProjectName -ProjectName $canonicalName
+    return [IO.Path]::GetFullPath(
+        (Join-Path (Get-WgComposeSelectionDirectory) "selection-$canonicalName.json")
+    )
+}
+
+function Read-WgComposeProjectSelection {
+    $selectionPath = Get-WgComposeSelectionPath
+    if (-not (Test-Path -LiteralPath $selectionPath)) { return "" }
+    if (-not (Test-Path -LiteralPath $selectionPath -PathType Leaf)) {
+        throw "The Compose project selection marker is not a regular file."
+    }
+    Assert-WgNoReparsePointInPath -Path $selectionPath
+    $selectionItem = Get-Item -LiteralPath $selectionPath -Force -ErrorAction Stop
+    if ($selectionItem.Length -lt 2 -or $selectionItem.Length -gt 16384) {
+        throw "The Compose project selection marker has an invalid size."
+    }
+    try {
+        $selection = Get-Content -LiteralPath $selectionPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "The Compose project selection marker is not valid JSON."
+    }
+    $expectedRoot = [IO.Path]::GetFullPath((Get-WgRoot)).TrimEnd(
+        [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    )
+    $storedRoot = [string]$selection.root_path
+    $canonicalName = Get-WgComposeProjectName
+    $selectedProject = [string]$selection.selected_project
+    $savedAt = [DateTimeOffset]::MinValue
+    $savedAtValid = [DateTimeOffset]::TryParse(
+        [string]$selection.saved_at,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$savedAt
+    )
+    if (
+        [int]$selection.schema_version -ne 1 -or
+        -not [string]::Equals(
+            $storedRoot, $expectedRoot, [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [string]$selection.canonical_project -cne $canonicalName -or
+        -not $savedAtValid
+    ) {
+        throw "The Compose project selection marker does not belong to this checkout."
+    }
+    Assert-WgManagedComposeProjectName -ProjectName $selectedProject
+    return $selectedProject
+}
+
+function Save-WgComposeProjectSelection {
+    param([Parameter(Mandatory = $true)][string]$ProjectName)
+
+    Assert-WgManagedComposeProjectName -ProjectName $ProjectName
+    $selectionDirectory = Get-WgComposeSelectionDirectory
+    if (Test-Path -LiteralPath $selectionDirectory) {
+        if (-not (Test-Path -LiteralPath $selectionDirectory -PathType Container)) {
+            throw "The Compose project selection path is not a directory."
+        }
+    }
+    else {
+        $null = New-Item -ItemType Directory -Path $selectionDirectory -Force -ErrorAction Stop
+    }
+    Assert-WgNoReparsePointInPath -Path $selectionDirectory
+    $selectionPath = Get-WgComposeSelectionPath
+    if (Test-Path -LiteralPath $selectionPath) {
+        if (-not (Test-Path -LiteralPath $selectionPath -PathType Leaf)) {
+            throw "The Compose project selection marker is not a regular file."
+        }
+        Assert-WgNoReparsePointInPath -Path $selectionPath
+    }
+    $normalizedRoot = [IO.Path]::GetFullPath((Get-WgRoot)).TrimEnd(
+        [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    )
+    $payload = [ordered]@{
+        schema_version = 1
+        root_path = $normalizedRoot
+        canonical_project = Get-WgComposeProjectName
+        selected_project = $ProjectName
+        saved_at = [DateTime]::UtcNow.ToString("o")
+    }
+    $json = $payload | ConvertTo-Json -Depth 4 -Compress
+    if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 16384) {
+        throw "The Compose project selection marker exceeds its size limit."
+    }
+    $temporaryPath = Join-Path $selectionDirectory (
+        ".selection-$([Guid]::NewGuid().ToString('N')).tmp"
+    )
+    try {
+        [IO.File]::WriteAllText(
+            $temporaryPath,
+            $json,
+            (New-Object Text.UTF8Encoding($false))
+        )
+        Move-Item -LiteralPath $temporaryPath -Destination $selectionPath -Force -ErrorAction Stop
+    }
+    catch {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        throw "The Compose project selection marker could not be saved atomically."
+    }
+    $verifiedSelection = Read-WgComposeProjectSelection
+    if ($verifiedSelection -cne $ProjectName) {
+        throw "The Compose project selection marker could not be verified after writing."
+    }
+    return $selectionPath
+}
+
+function Get-WgComposeProjectInventory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Docker,
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [Parameter(Mandatory = $true)][string]$ProjectName
+    )
+
+    Assert-WgManagedComposeProjectName -ProjectName $ProjectName
+    if (-not (Test-WgLocalDockerEndpoint -Endpoint $Endpoint)) {
+        throw "Compose inventory is restricted to a trusted local Docker Desktop endpoint."
+    }
+    $plugin = Get-WgTrustedDockerPluginConfig
+    $dockerBase = @("--config", $plugin.ConfigDirectory, "--host", $Endpoint)
+    $allResult = Invoke-WgExternalCommandCapture `
+        -FilePath $Docker `
+        -Arguments ($dockerBase + @(
+            "ps", "--all", "--quiet", "--no-trunc",
+            "--filter", "label=com.docker.compose.project=$ProjectName"
+        ))
+    if ($allResult.ExitCode -ne 0) {
+        throw "Unable to inventory the existing $ProjectName Compose project."
+    }
+    $containerIds = @(
+        $allResult.Output |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { $_ }
+    )
+    if ($containerIds.Count -eq 0) {
+        return [PSCustomObject]@{
+            ProjectName = $ProjectName
+            Exists = $false
+            OwnedByCurrentRoot = $false
+            Complete = $false
+            FullyRunning = $false
+            ContainerCount = 0
+            RunningCount = 0
+            Services = @()
+        }
+    }
+    $uniqueIds = @($containerIds | Select-Object -Unique)
+    if (
+        $uniqueIds.Count -ne $containerIds.Count -or
+        @($containerIds | Where-Object { $_ -notmatch "^[0-9a-f]{64}$" }).Count -gt 0
+    ) {
+        throw "The existing $ProjectName project returned invalid or duplicate container identities."
+    }
+
+    $expectedRoot = [IO.Path]::GetFullPath((Get-WgRoot))
+    $expectedComposePath = [IO.Path]::GetFullPath((Join-Path $expectedRoot "docker-compose.yml"))
+    $expectedEnvironmentPath = [IO.Path]::GetFullPath((Join-Path $expectedRoot ".env"))
+    $ownershipMatches = @()
+    $labelsById = @{}
+    foreach ($containerId in $containerIds) {
+        $inspectResult = Invoke-WgExternalCommandCapture `
+            -FilePath $Docker `
+            -Arguments ($dockerBase + @(
+                "inspect", "--format", "{{json .Config.Labels}}", $containerId
+            ))
+        $labelsText = (@($inspectResult.Output) -join [Environment]::NewLine).Trim()
+        if ($inspectResult.ExitCode -ne 0 -or -not $labelsText) {
+            throw "An existing $ProjectName container lacks verifiable Compose ownership."
+        }
+        try { $labels = ConvertFrom-Json -InputObject $labelsText -ErrorAction Stop }
+        catch { throw "An existing $ProjectName container has invalid ownership labels." }
+        if ($null -eq $labels) {
+            throw "An existing $ProjectName container has empty ownership labels."
+        }
+        $actualProject = [string](Get-WgObjectPropertyValue `
+            -InputObject $labels -Name "com.docker.compose.project")
+        $workingDirectory = [string](Get-WgObjectPropertyValue `
+            -InputObject $labels -Name "com.docker.compose.project.working_dir")
+        if ($actualProject -cne $ProjectName -or -not $workingDirectory) {
+            throw "An existing $ProjectName container has inconsistent ownership labels."
+        }
+        try { $resolvedWorkingDirectory = [IO.Path]::GetFullPath($workingDirectory) }
+        catch { throw "An existing $ProjectName container has an invalid working-directory label." }
+        $ownershipMatches += [string]::Equals(
+            $resolvedWorkingDirectory,
+            $expectedRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+        $labelsById[$containerId] = $labels
+    }
+    $ownedCount = @($ownershipMatches | Where-Object { $_ }).Count
+    if ($ownedCount -notin @(0, $containerIds.Count)) {
+        throw "The existing $ProjectName project mixes containers from different working directories."
+    }
+    if ($ownedCount -eq 0) {
+        return [PSCustomObject]@{
+            ProjectName = $ProjectName
+            Exists = $true
+            OwnedByCurrentRoot = $false
+            Complete = $false
+            FullyRunning = $false
+            ContainerCount = $containerIds.Count
+            RunningCount = 0
+            Services = @()
+        }
+    }
+
+    $services = @()
+    foreach ($containerId in $containerIds) {
+        $labels = $labelsById[$containerId]
+        $configFiles = [string](Get-WgObjectPropertyValue `
+            -InputObject $labels -Name "com.docker.compose.project.config_files")
+        $environmentFile = [string](Get-WgObjectPropertyValue `
+            -InputObject $labels -Name "com.docker.compose.project.environment_file")
+        $service = [string](Get-WgObjectPropertyValue `
+            -InputObject $labels -Name "com.docker.compose.service")
+        $containerNumber = [string](Get-WgObjectPropertyValue `
+            -InputObject $labels -Name "com.docker.compose.container-number")
+        $oneOff = [string](Get-WgObjectPropertyValue `
+            -InputObject $labels -Name "com.docker.compose.oneoff")
+        try { $resolvedConfigFiles = [IO.Path]::GetFullPath($configFiles) }
+        catch { throw "An existing $ProjectName container has an invalid Compose config-file label." }
+        $environmentMatches = $true
+        if ($environmentFile) {
+            try { $resolvedEnvironmentFile = [IO.Path]::GetFullPath($environmentFile) }
+            catch {
+                throw "An existing $ProjectName container has an invalid Compose environment-file label."
+            }
+            $environmentMatches = [string]::Equals(
+                $resolvedEnvironmentFile,
+                $expectedEnvironmentPath,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        }
+        if (
+            -not [string]::Equals(
+                $resolvedConfigFiles, $expectedComposePath, [StringComparison]::OrdinalIgnoreCase
+            ) -or
+            -not $environmentMatches -or
+            $service -notin @(Get-WgExpectedServices) -or
+            $containerNumber -cne "1" -or
+            $oneOff -cne "False"
+        ) {
+            throw "An existing $ProjectName container does not match this checkout's exact Compose topology."
+        }
+        $services += $service
+    }
+    if (@($services | Select-Object -Unique).Count -ne $services.Count) {
+        throw "The existing $ProjectName project has duplicate Compose service identities."
+    }
+
+    $runningResult = Invoke-WgExternalCommandCapture `
+        -FilePath $Docker `
+        -Arguments ($dockerBase + @(
+            "ps", "--quiet", "--no-trunc",
+            "--filter", "label=com.docker.compose.project=$ProjectName"
+        ))
+    if ($runningResult.ExitCode -ne 0) {
+        throw "Unable to inspect the running state of $ProjectName."
+    }
+    $runningIds = @(
+        $runningResult.Output |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { $_ }
+    )
+    if (
+        @($runningIds | Select-Object -Unique).Count -ne $runningIds.Count -or
+        @($runningIds | Where-Object { $_ -notin $containerIds }).Count -gt 0
+    ) {
+        throw "The running state of $ProjectName is inconsistent with its container inventory."
+    }
+    $expectedServices = @(Get-WgExpectedServices)
+    $complete = (
+        $services.Count -eq $expectedServices.Count -and
+        @($expectedServices | Where-Object { $_ -notin $services }).Count -eq 0
+    )
+    return [PSCustomObject]@{
+        ProjectName = $ProjectName
+        Exists = $true
+        OwnedByCurrentRoot = $true
+        Complete = $complete
+        FullyRunning = ($complete -and $runningIds.Count -eq $expectedServices.Count)
+        ContainerCount = $containerIds.Count
+        RunningCount = $runningIds.Count
+        Services = @($services | Sort-Object)
+    }
+}
+
+function Resolve-WgComposeProjectName {
+    param(
+        [Parameter(Mandatory = $true)][string]$Docker,
+        [Parameter(Mandatory = $true)][string]$Endpoint
+    )
+
+    $canonicalName = Get-WgComposeProjectName
+    $legacyName = Get-WgLegacyComposeProjectName
+    $canonical = Get-WgComposeProjectInventory `
+        -Docker $Docker -Endpoint $Endpoint -ProjectName $canonicalName
+    $legacy = Get-WgComposeProjectInventory `
+        -Docker $Docker -Endpoint $Endpoint -ProjectName $legacyName
+    if ($canonical.Exists -and -not $canonical.OwnedByCurrentRoot) {
+        throw "The checkout-scoped Compose project name is already owned by another working directory."
+    }
+    if (-not $canonical.Exists -and -not $legacy.Exists) {
+        $persistedSelection = Read-WgComposeProjectSelection
+        if ($persistedSelection) { return $persistedSelection }
+        return $canonicalName
+    }
+    $ownedLegacyExists = $legacy.Exists -and $legacy.OwnedByCurrentRoot
+    if (-not $canonical.Exists) {
+        if ($ownedLegacyExists) { return $legacyName }
+        return $canonicalName
+    }
+    if (-not $ownedLegacyExists) { return $canonicalName }
+
+    if ($legacy.FullyRunning -and -not $canonical.FullyRunning) { return $legacyName }
+    if ($canonical.FullyRunning -and -not $legacy.FullyRunning) { return $canonicalName }
+    if ($legacy.Complete -and -not $canonical.Complete) { return $legacyName }
+    if ($canonical.Complete -and -not $legacy.Complete) { return $canonicalName }
+    if ($legacy.RunningCount -gt 0 -and $canonical.RunningCount -eq 0) { return $legacyName }
+    if ($canonical.RunningCount -gt 0 -and $legacy.RunningCount -eq 0) { return $canonicalName }
+    throw "Both the legacy and checkout-scoped WhaleGuard Compose projects exist, but neither is the unique recoverable active stack. No project was modified."
+}
+
 function Get-WgComposeBaseArguments {
-    param([Parameter(Mandatory = $true)][string]$Endpoint)
+    param(
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [AllowEmptyString()][string]$ProjectName = ""
+    )
 
     $root = Get-WgRoot
     $envPath = Join-Path $root ".env"
     Assert-WgSafeComposeEnvironmentFile -Path $envPath
     $plugin = Get-WgTrustedDockerPluginConfig
-    $projectName = Get-WgComposeProjectName
+    if (-not $ProjectName) { $ProjectName = Get-WgComposeProjectName }
+    Assert-WgManagedComposeProjectName -ProjectName $ProjectName
     return @(
         "--config", $plugin.ConfigDirectory,
         "--host", $Endpoint,
         "compose",
-        "--project-name", $projectName,
+        "--project-name", $ProjectName,
         "--file", (Join-Path $root "docker-compose.yml"),
         "--env-file", $envPath
     )
@@ -1607,7 +1966,8 @@ function Invoke-WgRedisVolumeMigration {
         -not (Test-Path -LiteralPath $configPath -PathType Container) -or
         -not [string]::Equals($configPath, $expectedConfig, [StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals($configPath, $trustedConfig, [StringComparison]::OrdinalIgnoreCase) -or
-        $ProjectName -cne (Get-WgComposeProjectName)
+        $ProjectName -cne (Resolve-WgComposeProjectName `
+            -Docker $trustedDockerPath -Endpoint $trustedTarget.Endpoint)
     ) {
         throw "Redis volume migration requires the trusted local Docker path, config, endpoint, and project."
     }
@@ -1618,7 +1978,8 @@ function Invoke-WgRedisVolumeMigration {
     Assert-WgNoReparsePointInPath -Path $composePath
     Assert-WgNoReparsePointInPath -Path $environmentPath
     Assert-WgSafeComposeEnvironmentFile -Path $environmentPath
-    Assert-WgComposeOwnership -Docker $dockerPath -Endpoint $Endpoint
+    Assert-WgComposeOwnership `
+        -Docker $dockerPath -Endpoint $Endpoint -ProjectName $ProjectName
 
     $dockerBase = @("--config", $configPath, "--host", $Endpoint)
     $composeBase = @(
@@ -1787,11 +2148,13 @@ set -o pipefail; cap_eff="$(awk '$1 == "CapEff:" { print $2 }' /proc/1/status)";
 function Assert-WgComposeOwnership {
     param(
         [Parameter(Mandatory = $true)][string]$Docker,
-        [Parameter(Mandatory = $true)][string]$Endpoint
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [AllowEmptyString()][string]$ProjectName = ""
     )
 
     $plugin = Get-WgTrustedDockerPluginConfig
-    $projectName = Get-WgComposeProjectName
+    if (-not $ProjectName) { $ProjectName = Get-WgComposeProjectName }
+    Assert-WgManagedComposeProjectName -ProjectName $ProjectName
     $containerIds = @(& $Docker --config $plugin.ConfigDirectory --host $Endpoint ps --all --quiet --no-trunc --filter "label=com.docker.compose.project=$projectName" 2>$null)
     if ($LASTEXITCODE -ne 0) { throw "Unable to validate existing WhaleGuard Compose ownership." }
     $expectedRoot = [IO.Path]::GetFullPath((Get-WgRoot))
@@ -1857,6 +2220,304 @@ function Assert-WgDockerEngine {
     return $docker
 }
 
+function Get-WgDockerRuntimeProcesses {
+    $runtimeNames = @(
+        "Docker Desktop.exe",
+        "com.docker.backend.exe",
+        "com.docker.build.exe",
+        "dockerd.exe",
+        "vpnkit.exe"
+    )
+    try {
+        return @(
+            Get-CimInstance Win32_Process -ErrorAction Stop |
+                Where-Object { [string]$_.Name -in $runtimeNames }
+        )
+    }
+    catch {
+        throw "Docker runtime process state could not be verified; stale socket recovery is disabled."
+    }
+}
+
+function Get-WgDockerRuntimeDirectory {
+    $localAppData = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::LocalApplicationData
+    )
+    if (-not $localAppData) {
+        throw "LOCALAPPDATA could not be resolved for stale Docker socket recovery."
+    }
+    return [IO.Path]::GetFullPath((Join-Path $localAppData "Docker\run"))
+}
+
+function Get-WgDockerSecretsRuntimeDirectory {
+    $localAppData = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::LocalApplicationData
+    )
+    if (-not $localAppData) {
+        throw "LOCALAPPDATA could not be resolved for stale Docker socket recovery."
+    }
+    return [IO.Path]::GetFullPath((Join-Path $localAppData "docker-secrets-engine"))
+}
+
+function Get-WgDockerRuntimeEntryEvidence {
+    param([Parameter(Mandatory = $true)][string]$RuntimeDirectory)
+
+    try {
+        $children = @(Get-ChildItem -LiteralPath $RuntimeDirectory -Force -ErrorAction Stop)
+    }
+    catch {
+        throw "Docker runtime directory contents could not be verified; refusing automatic recovery."
+    }
+    return @($children | ForEach-Object {
+        [PSCustomObject]@{
+            Name = [string]$_.Name
+            IsFile = ($_ -is [IO.FileInfo])
+            Length = $(if ($_ -is [IO.FileInfo]) { [long]$_.Length } else { [long]-1 })
+            IsReparsePoint = (
+                ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+            )
+        }
+    })
+}
+
+function Get-WgDockerRuntimeRecoveryPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$DockerDesktopPath,
+        [ValidateSet("desktop", "secrets")][string]$RuntimeKind = "desktop"
+    )
+
+    $desktopPath = [IO.Path]::GetFullPath($DockerDesktopPath)
+    $canonicalDesktopPaths = @(Get-WgCanonicalDockerInstallRoots | ForEach-Object {
+        [IO.Path]::GetFullPath((Join-Path $_ "Docker Desktop.exe"))
+    })
+    if (-not ($canonicalDesktopPaths | Where-Object {
+        [string]::Equals($_, $desktopPath, [StringComparison]::OrdinalIgnoreCase)
+    })) {
+        throw "Stale socket recovery requires the canonical current-user Docker Desktop path."
+    }
+    $desktopEvidence = Get-WgDockerBinaryEvidence -Path $desktopPath -Kind "Desktop"
+    if (
+        $desktopEvidence.Version.Major -ne 4 -or
+        $desktopEvidence.Version.Minor -ne 88 -or
+        $desktopEvidence.Version.Build -ne 1
+    ) {
+        return [PSCustomObject]@{
+            Status = "not_affected_version"
+            Recoverable = $false
+            RuntimeDirectory = ""
+            RuntimeKind = $RuntimeKind
+            BackupDirectory = ""
+            RuntimeProcessCount = 0
+        }
+    }
+
+    if ($RuntimeKind -eq "desktop") {
+        $runtimeDirectory = [IO.Path]::GetFullPath((Get-WgDockerRuntimeDirectory))
+        $requiredSocketName = "sailor-ingest.sock"
+        $allowedSocketNames = @(
+            "dockerEthernetVfkit",
+            "dockerInference",
+            "sailor-ingest.sock",
+            "userAnalyticsOtlpHttp.sock"
+        )
+    }
+    else {
+        $runtimeDirectory = [IO.Path]::GetFullPath((Get-WgDockerSecretsRuntimeDirectory))
+        $requiredSocketName = "engine.sock"
+        $allowedSocketNames = @("engine.sock")
+    }
+    if (-not (Test-Path -LiteralPath $runtimeDirectory)) {
+        return [PSCustomObject]@{
+            Status = "runtime_directory_absent"
+            Recoverable = $false
+            RuntimeDirectory = $runtimeDirectory
+            RuntimeKind = $RuntimeKind
+            BackupDirectory = ""
+            RuntimeProcessCount = 0
+        }
+    }
+    if (-not (Test-Path -LiteralPath $runtimeDirectory -PathType Container)) {
+        throw "The Docker runtime path is not a directory; refusing automatic recovery."
+    }
+    Assert-WgNoReparsePointInPath -Path $runtimeDirectory
+
+    try {
+        $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $directorySecurity = [IO.Directory]::GetAccessControl(
+            $runtimeDirectory,
+            [Security.AccessControl.AccessControlSections]::Owner
+        )
+        $ownerSid = $directorySecurity.GetOwner(
+            [Security.Principal.SecurityIdentifier]
+        )
+    }
+    catch {
+        throw "Docker runtime directory ownership could not be verified; refusing automatic recovery: $($_.Exception.Message)"
+    }
+    if ($null -eq $currentSid -or $ownerSid -ne $currentSid) {
+        throw "Docker runtime directory is not owned by the current Windows user."
+    }
+
+    $runtimeProcesses = @(Get-WgDockerRuntimeProcesses)
+    if ($runtimeProcesses.Count -gt 0) {
+        return [PSCustomObject]@{
+            Status = "runtime_active"
+            Recoverable = $false
+            RuntimeDirectory = $runtimeDirectory
+            RuntimeKind = $RuntimeKind
+            BackupDirectory = ""
+            RuntimeProcessCount = $runtimeProcesses.Count
+        }
+    }
+
+    $entries = @(Get-WgDockerRuntimeEntryEvidence -RuntimeDirectory $runtimeDirectory)
+    if (-not ($entries | Where-Object { $_.Name -ceq $requiredSocketName })) {
+        return [PSCustomObject]@{
+            Status = "affected_socket_absent"
+            Recoverable = $false
+            RuntimeDirectory = $runtimeDirectory
+            RuntimeKind = $RuntimeKind
+            BackupDirectory = ""
+            RuntimeProcessCount = 0
+        }
+    }
+    $runtimeItem = Get-Item -LiteralPath $runtimeDirectory -Force -ErrorAction Stop
+    if ($runtimeItem.LastWriteTimeUtc -gt [DateTime]::UtcNow.AddSeconds(-30)) {
+        return [PSCustomObject]@{
+            Status = "runtime_directory_too_recent"
+            Recoverable = $false
+            RuntimeDirectory = $runtimeDirectory
+            RuntimeKind = $RuntimeKind
+            BackupDirectory = ""
+            RuntimeProcessCount = 0
+        }
+    }
+
+    foreach ($entry in $entries) {
+        if (
+            $entry.Name -notin $allowedSocketNames -or
+            -not $entry.IsFile -or
+            $entry.Length -ne 0 -or
+            -not $entry.IsReparsePoint
+        ) {
+            throw "Docker's stale runtime directory contains unexpected data; it was not renamed."
+        }
+    }
+    return [PSCustomObject]@{
+        Status = "recoverable_stale_socket_directory"
+        Recoverable = $true
+        RuntimeDirectory = $runtimeDirectory
+        RuntimeKind = $RuntimeKind
+        BackupDirectory = ""
+        RuntimeProcessCount = 0
+    }
+}
+
+function Move-WgDockerRuntimeRecoveryPlan {
+    param([Parameter(Mandatory = $true)][object]$Plan)
+
+    if (-not $Plan.Recoverable) { return $Plan }
+    if (@(Get-WgDockerRuntimeProcesses).Count -gt 0) {
+        throw "Docker runtime processes appeared during stale socket recovery; no directory was renamed."
+    }
+    $runtimeKind = [string]$Plan.RuntimeKind
+    if ($runtimeKind -notin @("desktop", "secrets")) {
+        throw "The stale Docker runtime recovery kind is invalid."
+    }
+    $runtimeDirectory = [IO.Path]::GetFullPath([string]$Plan.RuntimeDirectory)
+    $expectedRuntimeDirectory = if ($runtimeKind -eq "desktop") {
+        [IO.Path]::GetFullPath((Get-WgDockerRuntimeDirectory))
+    }
+    else {
+        [IO.Path]::GetFullPath((Get-WgDockerSecretsRuntimeDirectory))
+    }
+    if (-not [string]::Equals(
+        $runtimeDirectory,
+        $expectedRuntimeDirectory,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "The stale Docker runtime directory is outside the exact recovery boundary."
+    }
+    $recoveryRoot = [IO.Path]::GetFullPath((Split-Path $runtimeDirectory -Parent))
+    $leafName = Split-Path $runtimeDirectory -Leaf
+    $timestamp = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffZ")
+    $backupDirectory = Join-Path $recoveryRoot (
+        "{0}.stale-{1}-{2}" -f `
+            $leafName,
+            $timestamp,
+            [Guid]::NewGuid().ToString("N").Substring(0, 8)
+    )
+    if (Test-Path -LiteralPath $backupDirectory) {
+        throw "The stale Docker runtime backup path already exists."
+    }
+    try {
+        Move-Item -LiteralPath $runtimeDirectory -Destination $backupDirectory -ErrorAction Stop
+    }
+    catch {
+        throw "The verified stale Docker runtime directory could not be isolated safely."
+    }
+    if (
+        (Test-Path -LiteralPath $runtimeDirectory) -or
+        -not (Test-Path -LiteralPath $backupDirectory -PathType Container)
+    ) {
+        throw "The stale Docker runtime directory move could not be verified."
+    }
+    Assert-WgNoReparsePointInPath -Path $backupDirectory
+    return [PSCustomObject]@{
+        Status = "stale_socket_directory_isolated"
+        Recoverable = $false
+        RuntimeDirectory = $runtimeDirectory
+        RuntimeKind = $runtimeKind
+        BackupDirectory = [IO.Path]::GetFullPath($backupDirectory)
+        RuntimeProcessCount = 0
+    }
+}
+
+function Invoke-WgDockerRuntimeSocketRecovery {
+    param(
+        [Parameter(Mandatory = $true)][string]$DockerDesktopPath,
+        [ValidateSet("desktop", "secrets")][string]$RuntimeKind = "desktop"
+    )
+
+    $plan = Get-WgDockerRuntimeRecoveryPlan `
+        -DockerDesktopPath $DockerDesktopPath -RuntimeKind $RuntimeKind
+    return (Move-WgDockerRuntimeRecoveryPlan -Plan $plan)
+}
+
+function Invoke-WgDockerRuntimeSocketRecoveries {
+    param([Parameter(Mandatory = $true)][string]$DockerDesktopPath)
+
+    # Validate every known 4.88.1 socket directory before moving either one.
+    # This prevents a partially recognized directory from being touched.
+    $plans = @(
+        Get-WgDockerRuntimeRecoveryPlan `
+            -DockerDesktopPath $DockerDesktopPath -RuntimeKind "desktop"
+        Get-WgDockerRuntimeRecoveryPlan `
+            -DockerDesktopPath $DockerDesktopPath -RuntimeKind "secrets"
+    )
+    if (@($plans | Where-Object { $_.Status -eq "runtime_active" }).Count -gt 0) {
+        return [PSCustomObject]@{
+            Status = "runtime_active"
+            BackupDirectories = @()
+            Results = $plans
+        }
+    }
+    $results = @($plans | ForEach-Object { Move-WgDockerRuntimeRecoveryPlan -Plan $_ })
+    $backups = @(
+        $results |
+            Where-Object { $_.Status -eq "stale_socket_directory_isolated" } |
+            ForEach-Object { $_.BackupDirectory }
+    )
+    return [PSCustomObject]@{
+        Status = $(
+            if ($backups.Count -gt 0) { "stale_socket_directories_isolated" }
+            else { "not_needed" }
+        )
+        BackupDirectories = $backups
+        Results = $results
+    }
+}
+
 function Start-WgDockerDesktopEngine {
     param([ValidateRange(30, 600)][int]$TimeoutSeconds = 180)
 
@@ -1867,6 +2528,17 @@ function Start-WgDockerDesktopEngine {
     $docker = Get-WgDocker
     $desktopProcesses = @(Assert-WgRunningDockerDesktopOwnership -ExpectedPath $desktop)
     if ($desktopProcesses.Count -eq 0) {
+        $recovery = Invoke-WgDockerRuntimeSocketRecoveries -DockerDesktopPath $desktop
+        if ($recovery.Status -eq "runtime_active") {
+            throw "Docker runtime processes exist without a verified Docker Desktop launcher; refusing to start a second runtime."
+        }
+        if ($recovery.Status -eq "stale_socket_directories_isolated") {
+            Write-WgMessage -Message (
+                "Recovered Docker Desktop 4.88.1 from stale local sockets. " +
+                "The original runtime directories were retained at " +
+                "$($recovery.BackupDirectories -join '; ')."
+            ) -Level "WARN" -Color "Yellow"
+        }
         Start-Process -FilePath $desktop -WindowStyle Hidden
     }
 
@@ -1944,12 +2616,22 @@ function Test-WgApiReady {
 }
 
 function Invoke-WgCompose {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+    param(
+        [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments,
+        [AllowEmptyString()][string]$ProjectName = ""
+    )
     $docker = Get-WgDocker
     $target = Get-WgLocalDockerTarget -Docker $docker
-    Assert-WgComposeOwnership -Docker $docker -Endpoint $target.Endpoint
+    if (-not $ProjectName) {
+        $ProjectName = Resolve-WgComposeProjectName `
+            -Docker $docker -Endpoint $target.Endpoint
+    }
+    Assert-WgComposeOwnership `
+        -Docker $docker -Endpoint $target.Endpoint -ProjectName $ProjectName
     $plugin = Get-WgTrustedDockerPluginConfig
-    $baseArguments = @(Get-WgComposeBaseArguments -Endpoint $target.Endpoint)
+    $baseArguments = @(
+        Get-WgComposeBaseArguments -Endpoint $target.Endpoint -ProjectName $ProjectName
+    )
     $previousDockerConfig = [Environment]::GetEnvironmentVariable("DOCKER_CONFIG", "Process")
     try {
         # Docker Compose can launch Buildx as a second-level CLI plugin. The
@@ -1972,10 +2654,19 @@ function Get-WgExpectedServices {
 }
 
 function Get-WgComposeServiceStatus {
+    param([AllowEmptyString()][string]$ProjectName = "")
+
     $docker = Get-WgDocker
     $target = Get-WgLocalDockerTarget -Docker $docker
-    Assert-WgComposeOwnership -Docker $docker -Endpoint $target.Endpoint
-    $baseArguments = @(Get-WgComposeBaseArguments -Endpoint $target.Endpoint)
+    if (-not $ProjectName) {
+        $ProjectName = Resolve-WgComposeProjectName `
+            -Docker $docker -Endpoint $target.Endpoint
+    }
+    Assert-WgComposeOwnership `
+        -Docker $docker -Endpoint $target.Endpoint -ProjectName $ProjectName
+    $baseArguments = @(
+        Get-WgComposeBaseArguments -Endpoint $target.Endpoint -ProjectName $ProjectName
+    )
     $output = @(& $docker @baseArguments ps --all --format json 2>$null)
     if ($LASTEXITCODE -ne 0) { throw "Unable to read Docker Compose service status." }
     $text = ($output -join [Environment]::NewLine).Trim()
@@ -2024,6 +2715,7 @@ function Wait-WgStackHealthy {
     param(
         [Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$ApiPort,
         [Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$WebPort,
+        [AllowEmptyString()][string]$ProjectName = "",
         [ValidateRange(30, 900)][int]$TimeoutSeconds = 300
     )
 
@@ -2031,7 +2723,7 @@ function Wait-WgStackHealthy {
     $lastDescription = ""
     do {
         try {
-            $status = @(Get-WgComposeServiceStatus)
+            $status = @(Get-WgComposeServiceStatus -ProjectName $ProjectName)
             $summary = @(Get-WgServiceHealthSummary -Status $status)
             $notReady = @($summary | Where-Object { -not $_.Ready })
             $apiReady = Test-WgApiReady -Uri "http://127.0.0.1:$ApiPort/ready"
@@ -2058,13 +2750,23 @@ function Wait-WgStackHealthy {
 }
 
 function Write-WgComposeDiagnostics {
-    param([ValidateRange(1, 500)][int]$Tail = 80)
+    param(
+        [ValidateRange(1, 500)][int]$Tail = 80,
+        [AllowEmptyString()][string]$ProjectName = ""
+    )
 
     try {
         $docker = Get-WgDocker
         $target = Get-WgLocalDockerTarget -Docker $docker
-        Assert-WgComposeOwnership -Docker $docker -Endpoint $target.Endpoint
-        $baseArguments = @(Get-WgComposeBaseArguments -Endpoint $target.Endpoint)
+        if (-not $ProjectName) {
+            $ProjectName = Resolve-WgComposeProjectName `
+                -Docker $docker -Endpoint $target.Endpoint
+        }
+        Assert-WgComposeOwnership `
+            -Docker $docker -Endpoint $target.Endpoint -ProjectName $ProjectName
+        $baseArguments = @(
+            Get-WgComposeBaseArguments -Endpoint $target.Endpoint -ProjectName $ProjectName
+        )
         Write-WgMessage -Message "Docker Compose service state:" -Level "WARN" -Color "Yellow"
         foreach ($line in @(& $docker @baseArguments ps --all 2>&1)) {
             Write-WgMessage -Message ([string]$line) -Level "WARN"

@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 SERVICE_NAME = "whaleguard-mock-mcp-server"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.2.0"
 PROTOCOL_VERSION = "2025-06-18"
 MAX_DEMO_NOTES = 100
 

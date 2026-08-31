@@ -1,196 +1,144 @@
 # WhaleGuard 发布手册
 
-本文定义 WhaleGuard AI RedLab 的发布门禁、证据和 GitHub Release 操作。它不是“建议测试列表”：任何阻断项未通过时，都不得创建或发布对应版本 tag。
+本手册定义阻断式发布门禁。任何必需项未通过、未运行或证据不属于同一个最终 commit 时，都不得创建或发布 tag。
 
-## 发布状态与证据来源
+## 当前发布目标
 
 | 项目 | 说明 |
 | --- | --- |
-| 稳定基线 | `v0.1.0`（annotated tag，commit `6438ff2975eabe3059297ba1fb0d0728b9d78464`） |
-| 本手册适用版本 | `v0.1.1 Hardening` |
-| 发布身份 | 以 annotated tag `v0.1.1^{}` 解引用后的完整 commit 为唯一身份 |
-| 最终证据 | 以 GitHub `v0.1.1` Release 正文列出的 Actions runs、候选附件和发布后回读结果为准 |
+| 当前正式版本 | `v0.2.0 Beginner Experience / Academy` |
+| 上一稳定基线 | `v0.1.1 Hardening`，commit `dbbbd000067b4c161d6ff9029882c77a226d8101` |
+| 发布身份 | annotated tag `v0.2.0^{}` 解引用后的完整 commit |
+| 官方仓库 | <https://github.com/kskk666999-lgtm/whaleguard-redlab> |
 
-本手册定义阻断式发布门禁，不作为随分支更新的实时状态页。只有下述门禁在同一个冻结候选 commit 上全部通过、Release 正文已在仓库外填妥并完成占位符与附件校验后，维护者才可创建 annotated `v0.1.1` tag；tag 创建后不得移动或覆盖。
+`CHANGELOG.md` 的 `[Unreleased]` 只保留后续开发内容，不代表已经发布。最终测试数字、CI URL、附件 SHA-256 和 Known Issues 写入 GitHub Release 正文，避免更新证据反过来改变发布 commit。
 
-官方公开仓库为 [`kskk666999-lgtm/whaleguard-redlab`](https://github.com/kskk666999-lgtm/whaleguard-redlab)。精确 commit、run URL、测试计数、扫描摘要和附件 SHA-256 不写入本手册，统一记录在正式 Release 正文，避免证据更新反过来改变待验收 commit。
+## v0.2.0 阻断式 Checklist
 
-## v0.1.1 阻断式 Checklist
+以下项目必须在冻结的最终 commit 上重新运行；不能继承 v0.1.1 或开发过程中的结果。
 
-以下条目共同构成唯一 ready 判定；复选框记录已经固化的本版条件，标为“门禁”的发布时证据不在 Git 中维护实时状态，最终以正式 Release 正文为准。所有结果、日志、报告和哈希必须来自准备打 tag 的同一个 commit；不能继承 v0.1.0 或更早提交的测试数字。
+### 1. 版本、范围与数据保护
 
-### 1. 版本与变更范围
+- [ ] 应用、API、Worker、Policy Engine、Web 与三个 Mock 服务版本均为 `0.2.0`。
+- [ ] README、CHANGELOG、Quick Start、API、架构、安全、学院、网站体检、DeepSeek、Windows 和故障排查文档与实现一致。
+- [ ] Alembic `upgrade -> downgrade -> upgrade` 通过；升级前已有 PostgreSQL 数据已备份。
+- [ ] 历史 Project、Academy progress、Finding、Evidence、Report 与 Docker volume 未被删除或静默替换。
+- [ ] `git diff --check` 通过，最终提交前工作树只包含计划发布内容。
 
-- [x] HEAD 是计划发布的唯一提交，`git status --short` 为空。
-- [x] `git tag --list v0.1.1` 无输出，确认不存在同名 tag。
-- [x] API/应用版本元数据已统一为 `0.1.1`，且没有把开发分支误标为已发布。
-- [x] 本轮只包含可靠性、持续集成、安全供应链和必要文档，没有混入 v0.2 产品功能。
-- [x] 数据库迁移支持 `upgrade -> downgrade -> upgrade`，且兼容策略已记录。
-- [x] `CHANGELOG.md` 已按实际合入内容更新，没有 TODO、TBD 或未验证的完成声明。
+### 2. 自动化测试
 
-### 2. 自动化测试与数据库
+- [ ] API、Scope Guard、Worker、Policy Engine、Mock 服务和 Windows 脚本测试全通过。
+- [ ] DeepSeek 解析覆盖普通 JSON、代码围栏、JSON 前后文字、缺字段、错误类型、损坏 JSON、超时和 Provider 错误。
+- [ ] Alembic 往返迁移和必需表/索引/外键核对通过。
+- [ ] 前端组件测试、ESLint、TypeScript 和 Next.js 生产构建全通过。
+- [ ] Playwright 新手流程通过：登录 → Onboarding → B01 → Hint → 完成 → Attack Story → Hardened → V/H 对比 → 下一课。
+- [ ] 没有通过删除断言、吞异常、移除 health check、关闭扫描或跳过测试换取绿色结果。
 
-- [x] Python 后端、Scope Guard、Worker 和 Mock 服务测试全通过，无 skip 增量。
-- [x] 前端 lint、typecheck、组件测试和生产构建全通过。
-- [x] Playwright 确定性 Mock UI 流程与 Docker 真实栈流程均通过；真实栈证据必须包含随机凭据登录、项目与回环 Scope 创建、AgentArena 运行、人工审批、完成态和 15 条 RQ delivery receipt。
-- [x] Alembic 往返迁移和必需表/约束核对通过。
-- [x] Outbox 场景通过：事务提交前不投递、提交后投递、周期泵补投、Redis 失败保持 pending、有界退避和稳定 `delivery_id`。
-- [x] RQ 幂等性场景全通过：顺序重复、20 路并发、超过 Worker 进程内 25 秒窗口后观察到 retry 次数递减，且任务进入 RQ `scheduled` / `queued` 或已开始第二次 `started` 执行、Redis 重连、断连重投、不同 delivery、内容冲突 `409`、回滚重试、重启重复、receipt 查询。
-- [x] RunEvent 场景通过：sequence 唯一/单调、SSE cursor、`Last-Event-ID`、分页 history、64 KiB 上限、递归脱敏和旧 `event_log` 兼容。
-- [x] PostgreSQL + Redis + 2–4 Worker 并发专项通过，最终业务状态只应用一次。
-- [x] 没有通过删除断言、吞异常、移除 health check、关闭扫描或跳过测试来获得绿色结果。
+### 3. Academy 与网站体检
 
-### 3. Docker 与真实业务链路
+- [ ] 10 个“开始之前”微课程可读取并包含人话解释、类比、图示和小交互。
+- [ ] 17 个 Scenario 的 Vulnerable 版本可命中，Hardened 版本可阻断。
+- [ ] 三级 Hint、独立完整解法、Attack Story、V/H 对比、技能进度、知识回顾和下一课都连接真实数据。
+- [ ] 重置本关只清理易失实验状态，不删除总进度、Session、Finding、Evidence、Report、Project 或 volume。
+- [ ] Mock Agent 网站体检执行 13 项低风险只读检查并生成 Finding、Evidence 和 HTML Report。
+- [ ] AI 增强失败时规则结果仍完成；“重新生成 AI 解读”不再次访问被测网站。
 
-- [x] 候选 commit 冻结且工作树无非忽略变更后，在实际发布验收平台运行韧性门禁：Linux/WSL 使用 `python3 scripts/test_docker_resilience.py --require-clean-git`；Windows 必须从仓库根目录显式锁定受信 CLI、本地 Engine 和受管插件目录并运行以下命令。相应平台的命令必须退出码为 0、在报告记录候选完整 commit SHA 与 `source_git_clean: true`、输出最终成功标记，并在失败、中断或成功结束后恢复标准单 Worker/八服务拓扑。
+### 4. Docker、Scope 与持久化
 
-  ```powershell
-  py -3 scripts/test_docker_resilience.py `
-    --require-clean-git `
-    --docker "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin\docker.exe" `
-    --docker-host "npipe:////./pipe/docker_engine" `
-    --docker-config "$PWD\.local\docker-cli-config"
-  ```
-- [x] `docker compose config` 和仓库安全不变量检查通过。
-- [x] 从干净构建启动后，db、redis、api、worker、web、mock-llm、mock-agent、mock-mcp-server 共 8 个服务全部 `healthy`。
-- [x] 用真实 root-owned v0.1.0 AOF/RDB 隔离卷验证自动升级：一次性 helper 只持有 `CHOWN` 与只读目录遍历所需的 `DAC_READ_SEARCH`，主 Redis PID 以非 root、零有效能力运行，数据跨升级和重启保持一致。
-- [x] 在 Windows 11 / Windows PowerShell 5.1 上从真实旧版 named volume 直接运行 `START_WHALEGUARD.bat`：入口不调用宿主 Python，自动迁移后数据和原卷身份保持、8 个服务健康；Python helper 的实栈结果和 PowerShell 单元仿真都不能替代这项入口级门禁。
-- [x] API `/health` 与 `/ready` 通过，数据库 readiness 为 `ok`。
-- [x] 完整 smoke test 全通过，并生成本轮报告及 SHA-256。
-- [x] 真实 RQ 消费和 callback 验证通过；`docker-resilience-report.json` 的 `rq_outer_retry` 记录同一 `job_id` / `delivery_id` 的 retry 次数递减、观察到的 `scheduled` / `queued` / 第二次 `started` 状态及相应注册表归属、API 断开时长和最终唯一 receipt。
-- [x] Worker crash/restart、Redis 临时断开、API restart 和 Worker restart 场景通过。
-- [x] `docker compose restart` 后项目、Run、Finding、Evidence、审计和报告数据保持一致；Evidence 必须逐条匹配同一 ID 集合、`project_id` / `run_id` / `finding_id` 关联、`evidence_type` 与 SHA-256，不得只比较数量。
-- [x] 完整 `down/up` 后同一批持久化对象和报告哈希保持一致；只接受当前 smoke 生成的 schema v2 checkpoint，旧 schema v1 checkpoint 不得作为 v0.1.1 发布证据。
+- [ ] `docker compose config --quiet` 和 Compose 安全不变量校验通过。
+- [ ] db、redis、api、worker、web、mock-llm、mock-agent、mock-mcp-server 8/8 healthy，`/health` 与 `/ready` 通过。
+- [ ] Scope Guard 拒绝非 HTTP(S)、未授权 host/port/path/query、DNS 解析到范围外地址和范围外重定向。
+- [ ] 网站向导必须确认所有权/授权，默认仅允许 `safe_read_only`；新手模式不放宽 RBAC 或 Scope。
+- [ ] `docker compose restart` 后 Project、Academy progress、Finding、Evidence、Report 和报告哈希保持一致。
+- [ ] `down -> up` 后同一批对象、关联 ID、Evidence SHA-256 和报告文件保持一致。
+- [ ] Windows 冷启动实测只双击 `START_WHALEGUARD.bat`：Docker Desktop 从停止状态安全恢复、历史 Compose 项目被唯一识别、8 服务 healthy、浏览器打开且历史报告可见。
+- [ ] 冷启动不会停止无关 WSL/Docker 工作负载，不删除 volume；异常归属或多个候选项目时 fail closed。
 
-### 4. CI 与安全供应链
+### 5. UI、截图与可访问性
 
-- **远端 CI 门禁：** 发布前必须确认 release PR 与稳定分支的 `CI` 和 `Supply Chain Security` workflow 均为绿色，并把 run URL 与 head SHA 写入 Release 正文。
-- [x] Workflow 使用最小权限、合理超时，来自 fork 的 PR 默认拿不到 secrets。
-- [x] Python `pip-audit` 完整报告已保留且无运行/报告错误；Python High/Critical 由 Trivy filesystem vulnerability gate 统一阻断，npm 继续以 `audit-level=high` 阻断。
-- [x] Dependency Review 与 secret scan 兼容检查已完成。
-- [x] Syft 已从发布 commit 的 `git archive`（而非可能含 `.env`、`.local`、`artifacts` 或 `node_modules` 的工作目录）生成 CycloneDX 与 SPDX SBOM，`sbom-manifest.json` 的完整 commit SHA 与候选一致。
-- [x] Trivy 文件系统和容器镜像扫描完成；Critical/High 为零，或每条例外都有负责人、理由、影响和到期日。
-- [x] Windows 最终镜像 SBOM/Trivy 扫描为 `generate_sbom.py` 与 `scan_compose_images.py` 同时显式传入 `--docker`、`--docker-host`、`--docker-config` 和 `--require-running-match`；两个 `compose-image-inventory.json` 的 CLI、endpoint、config、Compose plugin 路径及 SHA-256 与同一候选 commit 的 `docker-resilience-report.json` 完全一致。Linux/CI 可以使用默认本地 Engine，但仍必须验证运行容器与所扫不可变 image ID 一致。
-- [x] Medium/Low 保留在报告中，没有通过关闭扫描隐藏。
-- **候选附件门禁：** 发布前必须在稳定分支候选提交上成功运行 `Build Release Candidate Artifacts`，并确认 `release-metadata.json.commit` 与 `sbom-manifest.json.source_git_commit` 等于候选完整 SHA。
-- [x] Release 附件已生成 `SHA256SUMS`，并在独立命令中复核。
+- [ ] Beginner/Advanced 切换保存到账户偏好；高级功能没有被删除。
+- [ ] 首次引导最多 4 步且模型可跳过；无 API Key 也能开始第一课。
+- [ ] 所有按钮执行真实动作或明确禁用，没有点击无反应的占位控件。
+- [ ] Release 与 README 只引用仓库中真实存在、已脱敏且在 `docs/screenshots/README.md` 登记尺寸与 SHA-256 的截图，不创建破图链接或用设计稿冒充实机画面。
+- [ ] 若发布新的 v0.2.0 页面截图，必须来自当前真实运行环境并完成同样登记；没有可复用的已登录浏览器会话时可沿用已验证的高级工作台截图，但 Release Notes 必须明确没有新增 Beginner/Academy/Website 页面截图。
 
-### 5. 文档、演示与截图
+### 6. 安全与供应链
 
-- [x] Dashboard 真实截图已入库。
-- [x] MCPShield 真实截图已入库。
-- [x] 测试运行详情真实截图已入库。
-- [x] AgentArena 真实截图已捕获并脱敏。
-- [x] Finding 详情真实截图已捕获并脱敏。
-- [x] HTML 报告预览真实截图已捕获并脱敏。
-- [x] [5 分钟演示](DEMO_GUIDE.md)、[架构图](ARCHITECTURE.md)、README 和截图清单与最终版本一致。
-- **Release 正文门禁：** 发布前必须将 [Release 模板](../.github/RELEASE_TEMPLATE.md) 复制到仓库外填妥，移除全部 HTML 注释、`REQUIRED` 和 `TODO` 占位符，并核对同一候选的 SHA、run URL、测试结论和附件哈希。
+- [ ] `git ls-files`、diff 和 Secret 扫描确认没有 `.env`、API Key、管理员密码、Cookie、Token、数据库、用户扫描数据或未脱敏日志。
+- [ ] API Key 始终加密保存、查询只返回掩码；AI 内容不能覆盖 deterministic Finding。
+- [ ] CI、Supply Chain Security 与 Release Candidate Artifacts workflow 在最终 commit 上通过。
+- [ ] pip/npm 审计、Trivy 源码/镜像扫描、Syft SPDX/CycloneDX SBOM 和 `SHA256SUMS` 已生成并复核。
+- [ ] 所有服务继续默认只绑定 `127.0.0.1`；Mock 服务只在 Docker 私有网络。
 
-固定文件名、尺寸、SHA-256 和捕获要求见 [截图资产清单](screenshots/README.md)。不要提交设计稿、AI 生成图或空白占位图冒充实测界面。
+## 冷启动和本地最终验收
 
-## 发布附件
+Windows 用户的正式入口是：
 
-正式 v0.1.1 Release 至少包含：
+```powershell
+.\START_WHALEGUARD.bat
+```
+
+发布验收时先正常停止 WhaleGuard 和 Docker Desktop，保留所有 volume，只运行该入口。成功条件不是“脚本没有报错”，而是 8 个服务均健康、`http://127.0.0.1:3000` 可登录、旧报告可打开。
+
+Linux/WSL2 使用：
+
+```bash
+make docker-up
+```
+
+不要用删除 volume、重置数据库或新建空 Compose 项目来掩盖升级问题。
+
+## 候选附件
+
+正式 v0.2.0 Release 至少包含：
 
 | 附件 | 要求 |
 | --- | --- |
-| `whaleguard-ai-redlab-v0.1.1.tar.gz` | `git archive` 生成的无签名源码候选包 |
-| `release-metadata.json` | 版本、完整 commit SHA、生成时间和 `published: false` |
-| `whaleguard-source.spdx.json` / `whaleguard-source.cyclonedx.json` | Syft 生成并由脚本验证结构的源码 SBOM |
-| `sbom-manifest.json` | SBOM 格式和文件清单 |
-| `trivy-source.json` | 完整源码漏洞、错误配置、Secret 与许可证扫描结果 |
-| `SHA256SUMS` | 覆盖全部手工上传附件，不覆盖其自身 |
-| Release notes | Highlights、升级说明、已知限制、验证结果和安全使用边界 |
+| `whaleguard-ai-redlab-v0.2.0.tar.gz` | 从冻结 commit 的 `git archive` 生成 |
+| `release-metadata.json` | 版本、完整 commit SHA、生成时间、`published: false` |
+| `whaleguard-source.spdx.json` | SPDX JSON SBOM |
+| `whaleguard-source.cyclonedx.json` | CycloneDX JSON SBOM |
+| `sbom-manifest.json` | SBOM 清单且 source commit 与候选一致 |
+| `trivy-source.json` | 完整源码扫描结果 |
+| `SHA256SUMS` | 覆盖所有手工上传附件，不覆盖自身 |
 
-GitHub 自动生成的 Source code ZIP/TAR 也必须解引用到同一 tag commit。pip/npm 审计和八服务镜像 Trivy/SBOM 保留在 `Supply Chain Security` workflow artifact 中，并在 Release 正文给出对应 run URL 与结论。
+不得把 `.env`、`.local`、管理员凭据、日志、数据库、Cookie、Token、API Key 或用户数据加入附件。
 
-不要把 `.env`、`.local/first-run-credentials.txt`、日志、数据库、Cookie、Token、API Key 或任何用户数据加入附件。
+## 发布流程
 
-## Release 流程
+1. 在 `dev` 完成功能和本地验收，整理语义化提交并推送。
+2. 通过项目既有流程把候选合入稳定分支；记录唯一候选 commit SHA。
+3. 在该 SHA 上重新运行所有门禁，并等待 GitHub `CI` 与 `Supply Chain Security` 通过。
+4. 手工运行 `Build Release Candidate Artifacts`，输入 `v0.2.0`；核对 workflow head SHA、metadata commit 与 SBOM source commit。
+5. 在仓库外填写 `.github/RELEASE_TEMPLATE.md`，删除全部占位符并写入真实证据。
+6. 只有全部通过后创建 annotated tag：
 
-### v0.1.0 本地卷升级
+   ```powershell
+   git tag -a v0.2.0 -m "WhaleGuard AI RedLab v0.2.0 Beginner Experience"
+   git rev-parse 'v0.2.0^{}'
+   ```
 
-Windows 的 `START_WHALEGUARD.bat` 以及 Linux/WSL 的 `make dev`、`make docker-up` 会在启动 Redis 前自动运行幂等迁移。Windows 受管流程继续使用仓库路径哈希项目名；Linux/WSL 保留 v0.1.0 的固定 `whaleguard-redlab` identity，避免升级后误连空卷。迁移只接受名称与 `com.docker.compose.project` / `com.docker.compose.volume=redis_data` 标签同时匹配、`Scope=local` 且没有 local-driver bind 选项的唯一 volume；若发现其他容器挂载或归属不一致会直接失败。迁移 helper 无网络、只读根文件系统、`cap_drop=ALL`，仅临时增加 `CHOWN` 与只读目录遍历所需的 `DAC_READ_SEARCH`，不会删除卷。随后常驻 Redis 始终以 `redis` 用户和零有效能力运行。
+7. 推送 tag，创建 GitHub Release，上传附件；再从 GitHub 下载并复核 SHA-256。
+8. 在未登录浏览器回读 README、截图、Release 正文、附件和最终访问地址。
 
-直接使用 Compose 的 Linux/WSL 用户必须先执行：
+Tag 发布后不得移动或覆盖。若发现问题，应记录影响并发布后续补丁版本。
 
-```bash
-python scripts/bootstrap_env.py
-WG_PROJECT="$(python scripts/migrate_redis_volume.py --print-project-name)"
-python scripts/migrate_redis_volume.py --project-name "$WG_PROJECT"
-docker compose --project-name "$WG_PROJECT" --file docker-compose.yml --env-file .env up --build
-```
+## Release Notes 必含章节
 
-迁移输出 `status=not_needed`、`already_compatible` 或 `migrated` 都是正常且可重复执行的结果；任何 `FAILED` 都必须先排查归属冲突，禁止用宽权限容器绕过。
+- Beginner Experience
+- WhaleGuard Academy
+- Website Check
+- AI Analysis
+- Reliability
+- Security
+- Breaking Changes
+- Known Issues
+- Verification（commit、测试、CI、Docker、持久化、冷启动、附件哈希）
 
-### A. 冻结候选提交
+## 判定规则
 
-1. 从 `dev` 创建短生命周期 release PR，只允许阻断性修复和文档校正。
-2. 记录候选 commit SHA；后续任何代码变化都会使既有验收证据失效。
-3. 在候选 commit 上完成上方所有门禁，并保存 CI URL、测试计数、扫描摘要、SBOM 哈希和 Docker 状态。
-4. 由维护者复核 `git diff --check`、工作区、Changelog、迁移和 Release 正文。
+- **READY**：所有阻断项通过，证据属于同一最终 commit，GitHub Release 与附件已回读。
+- **NOT READY**：任一必需项失败、未运行、结果未知或证据属于旧 commit。
+- **BLOCKED**：明确记录外部阻塞与下一步，但仍不得创建 tag。
 
-最低限度的只读检查：
-
-```powershell
-git status --short
-git log -1 --format="%H %cs %s"
-git diff --check
-git tag --list v0.1.1
-git remote -v
-```
-
-### B. 生成并核对校验文件
-
-候选 commit 位于稳定分支后，在该分支手工触发 GitHub Actions `Build Release Candidate Artifacts`，输入 `v0.1.1`。运行详情的 head SHA、`release-metadata.json.commit` 与 `sbom-manifest.json.source_git_commit` 必须全部等于候选 SHA。该 workflow 只生成无签名候选附件，不创建 tag、GitHub Release 或任何发布状态。
-
-本地等价的源码打包与校验入口：
-
-```powershell
-py -3 scripts/security/package_release.py --version v0.1.1 --output-dir artifacts/release
-# 安装并验证 Syft/Trivy 后生成 SBOM 与 trivy-source.json。
-py -3 scripts/security/generate_checksums.py artifacts/release
-```
-
-如果需要独立复算，不要覆盖候选文件；将所有准备上传的附件放进隔离目录后计算哈希。PowerShell 示例：
-
-```powershell
-$releaseDir = Resolve-Path .\dist\v0.1.1
-Get-ChildItem -LiteralPath $releaseDir -File |
-  Where-Object Name -ne 'SHA256SUMS' |
-  Sort-Object Name |
-  ForEach-Object {
-    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
-    "$hash  $($_.Name)"
-  } | Set-Content -LiteralPath (Join-Path $releaseDir 'SHA256SUMS') -Encoding ascii
-```
-
-随后在新的终端或 CI job 中独立复算并逐项比对。`SHA256SUMS` 只能证明文件完整性，不能代替来源签名、SBOM 或漏洞扫描。
-
-### C. 创建不可变 tag
-
-只有所有阻断项勾选且 release PR 已合入稳定分支后，才允许执行：
-
-```powershell
-git tag -a v0.1.1 -m "WhaleGuard AI RedLab v0.1.1 Hardening"
-git show --no-patch --format=fuller v0.1.1
-git rev-parse 'v0.1.1^{}'
-```
-
-推送前再次确认 tag 解引用后的 commit 与已验收 SHA 完全一致。若发布后发现问题，不得移动或覆盖 tag；应撤下有问题的附件、说明影响，并发布新的补丁版本。
-
-### D. 发布与回读
-
-1. 将 `.github/RELEASE_TEMPLATE.md` 复制到被 Git 忽略的 `.local/release-body-v0.1.1.md`，在副本中填写并删除全部注释占位符；不得修改已冻结 commit 中的模板，填写后 `git status --short` 仍须为空。
-2. 使用 GitHub 的 annotated tag 创建 Release，上传 SBOM、扫描摘要和 `SHA256SUMS`。
-3. 下载已发布附件，重新核对 SHA-256。
-4. 从未登录窗口检查 README 图片、架构图、Changelog、Release 正文和附件均可访问。
-5. 记录 Release URL、tag commit、CI run URL、附件列表和最终校验结果。
-
-## 版本判定规则
-
-- **READY**：所有阻断项通过，证据来自同一候选 commit，维护者完成回读。
-- **NOT READY**：任一阻断项失败、未运行、结果未知、证据属于旧 commit，或 GitHub CI/Release 无法回读。
-- **BLOCKED**：明确记录外部阻塞和下一步，但仍不得创建 tag。
-
-WhaleGuard 仅用于本地实验、自有系统或获得明确授权的目标。Release 不能扩大这一安全边界，也不能通过默认配置开放公网服务、真实凭据或未知 MCP Tool 执行能力。
+WhaleGuard 只用于本地实验、自有系统或获得明确授权的目标。Release 不得扩大这一边界，也不得加入 C2、WebShell、恶意载荷、凭据窃取、爆破、持久化、免杀、任意 Shell、未授权公网扫描或自动利用。

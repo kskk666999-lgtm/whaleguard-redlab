@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import secrets
+import unicodedata
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -106,27 +107,83 @@ def mask_secret(value: str | None) -> str | None:
     return f"sk-********{suffix}"
 
 
-SENSITIVE_KEYS = {
-    "api_key",
+SENSITIVE_KEY_MARKERS = (
     "apikey",
     "authorization",
     "cookie",
     "password",
+    "passwd",
     "secret",
     "token",
-    "private_key",
-    "access_key",
-}
+    "privatekey",
+    "accesskey",
+    "credential",
+)
+
+
+def _is_sensitive_key(value: Any) -> bool:
+    """Recognize credential-bearing compound keys without matching generic ``key``."""
+
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFKC", str(value)).casefold()
+        if character.isalnum()
+    )
+    return any(marker in normalized for marker in SENSITIVE_KEY_MARKERS)
+
+
+def _redact_assignment(value: str) -> str:
+    """Mask common environment/header assignment strings while retaining their names."""
+
+    for separator in ("=", ":"):
+        if separator not in value:
+            continue
+        name, _content = value.split(separator, 1)
+        if len(name) <= 128 and _is_sensitive_key(name):
+            return f"{name}{separator}[REDACTED]"
+    return value
 
 
 def redact(value: Any) -> Any:
     if isinstance(value, dict):
+        normalized_items = {
+            "".join(
+                character
+                for character in unicodedata.normalize("NFKC", str(key)).casefold()
+                if character.isalnum()
+            ): item
+            for key, item in value.items()
+        }
+        declared_name = next(
+            (
+                normalized_items[key]
+                for key in ("name", "key", "header", "field")
+                if key in normalized_items and isinstance(normalized_items[key], str)
+            ),
+            None,
+        )
+        redact_declared_value = declared_name is not None and _is_sensitive_key(declared_name)
         return {
-            str(key): "[REDACTED]" if str(key).lower() in SENSITIVE_KEYS else redact(item)
+            str(key): (
+                "[REDACTED]"
+                if _is_sensitive_key(key)
+                or (
+                    redact_declared_value
+                    and "".join(
+                        character
+                        for character in unicodedata.normalize("NFKC", str(key)).casefold()
+                        if character.isalnum()
+                    )
+                    in {"value", "content", "data"}
+                )
+                else redact(item)
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):
         return [redact(item) for item in value]
     if isinstance(value, tuple):
         return [redact(item) for item in value]
+    if isinstance(value, str):
+        return _redact_assignment(value)
     return value

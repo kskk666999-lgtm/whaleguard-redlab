@@ -4,10 +4,12 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Bug, CheckCircle2, Clock3, FolderKanban, KeyRound, Play, ShieldAlert, ShieldCheck, Siren, Target, Zap } from "lucide-react";
 import { AttackTopology } from "@/components/charts/attack-topology";
+import { BeginnerDashboard } from "@/components/beginner-dashboard";
 import { RiskDistribution } from "@/components/charts/risk-distribution";
 import { RiskTrend } from "@/components/charts/risk-trend";
 import { SecurityGauge } from "@/components/charts/security-gauge";
 import { PageHeader } from "@/components/page-header";
+import { useApp } from "@/components/providers";
 import { Badge, statusTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -29,6 +31,12 @@ function MetricCard({ label, value, hint, icon: Icon, tone = "teal" }: { label: 
 }
 
 export default function DashboardPage() {
+  const { experienceMode, preferencesReady } = useApp();
+  if (!preferencesReady) return <LoadingState label="正在读取体验模式…" />;
+  return experienceMode === "beginner" ? <BeginnerDashboard /> : <AdvancedDashboard />;
+}
+
+function AdvancedDashboard() {
   const projects = useQuery({ queryKey: ["projects", "dashboard"], queryFn: () => fetchPage<Project>("/projects?page=1&page_size=100") });
   const findings = useQuery({ queryKey: ["findings", "dashboard"], queryFn: () => fetchPage<Finding>("/findings?page=1&page_size=100") });
   const runs = useQuery({ queryKey: ["runs", "dashboard"], queryFn: () => fetchPage<TestRun>("/runs?page=1&page_size=8") });

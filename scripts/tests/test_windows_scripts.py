@@ -62,6 +62,10 @@ $script:MigrationCalls = @()
 function Get-WgRoot {{ return {ps_quote(workspace)} }}
 function Get-WgDocker {{ return {ps_quote(docker)} }}
 function Get-WgComposeProjectName {{ return {ps_quote(project)} }}
+function Resolve-WgComposeProjectName {{
+    param([string]$Docker, [string]$Endpoint)
+    return {ps_quote(project)}
+}}
 function Get-WgLocalDockerTarget {{
     param([string]$Docker = '')
     return [PSCustomObject]@{{ ContextName = 'desktop-linux'; Endpoint = {ps_quote(endpoint)} }}
@@ -69,7 +73,9 @@ function Get-WgLocalDockerTarget {{
 function Get-WgTrustedDockerPluginConfig {{
     return [PSCustomObject]@{{ ConfigDirectory = {ps_quote(config)}; ComposePath = 'fixture' }}
 }}
-function Assert-WgComposeOwnership {{ param([string]$Docker, [string]$Endpoint) }}
+function Assert-WgComposeOwnership {{
+    param([string]$Docker, [string]$Endpoint, [string]$ProjectName)
+}}
 function Get-WgPython {{ throw 'HOST_PYTHON_MUST_NOT_BE_USED' }}
 """
 
@@ -345,7 +351,7 @@ def test_container_setup_keeps_per_user_resume_and_docker_local_only() -> None:
     assert hello_world_index < resume.index("Get-WgDockerDesktopWslRuntimeEvidence")
     assert '"--host", $dockerTarget.Endpoint' in resume
     assert "Get-WgComposeBaseArguments -Endpoint $dockerTarget.Endpoint" in resume
-    assert '"--project-name", $projectName' in common
+    assert '"--project-name", $ProjectName' in common
     assert "Get-WgComposeProjectName" in common
     assert '"--env-file", $envPath' in common
     assert "Assert-WgSafeComposeEnvironmentFile -Path $envPath" in common
@@ -369,6 +375,9 @@ $script:Started = $false
 $script:ProbeCount = 0
 function Find-WgTrustedDockerDesktopPath {{ return {ps_quote(desktop)} }}
 function Get-WgDocker {{ return {ps_quote(docker)} }}
+function Invoke-WgDockerRuntimeSocketRecoveries {{
+    return [PSCustomObject]@{{ Status = 'not_needed'; BackupDirectories = @() }}
+}}
 function Assert-WgRunningDockerDesktopOwnership {{
     param([string]$ExpectedPath)
     if ($ExpectedPath -ne {ps_quote(desktop)}) {{ throw 'wrong desktop path' }}
@@ -755,6 +764,7 @@ function Get-WgLocalDockerTarget {{
     return [PSCustomObject]@{{ Endpoint = 'npipe:////./pipe/docker_engine' }}
 }}
 function Assert-WgComposeOwnership {{ }}
+function Resolve-WgComposeProjectName {{ return 'whaleguard-redlab-test' }}
 function Get-WgComposeBaseArguments {{ return @() }}
 function Get-WgTrustedDockerPluginConfig {{
     return [PSCustomObject]@{{ ConfigDirectory = {ps_quote(config_root)} }}
@@ -855,6 +865,476 @@ exit 0
     assert result.returncode == 0, result.stderr + result.stdout
 
 
+def test_compose_inventory_accepts_missing_optional_environment_label_but_rejects_mismatch(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "checkout"
+    config = tmp_path / "docker-config"
+    root.mkdir()
+    config.mkdir()
+    container_id = "a" * 64
+    base_labels = {
+        "com.docker.compose.project": "whaleguard-redlab",
+        "com.docker.compose.project.working_dir": str(root),
+        "com.docker.compose.project.config_files": str(root / "docker-compose.yml"),
+        "com.docker.compose.service": "api",
+        "com.docker.compose.container-number": "1",
+        "com.docker.compose.oneoff": "False",
+    }
+    missing_environment_label = json.dumps(base_labels)
+    mismatched_environment_label = json.dumps(
+        {
+            **base_labels,
+            "com.docker.compose.project.environment_file": str(tmp_path / "other.env"),
+        }
+    )
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgRoot {{ return {ps_quote(root)} }}
+function Get-WgTrustedDockerPluginConfig {{
+    return [PSCustomObject]@{{ ConfigDirectory = {ps_quote(config)} }}
+}}
+function Get-WgExpectedServices {{ return @('api') }}
+$script:InventoryLabels = {ps_quote(missing_environment_label)}
+function Invoke-WgExternalCommandCapture {{
+    param([string]$FilePath, [string[]]$Arguments)
+    if ($Arguments -contains 'inspect') {{
+        return [PSCustomObject]@{{ ExitCode = 0; Output = @($script:InventoryLabels) }}
+    }}
+    return [PSCustomObject]@{{ ExitCode = 0; Output = @('{container_id}') }}
+}}
+$inventory = Get-WgComposeProjectInventory `
+    -Docker 'C:\\trusted-docker.exe' `
+    -Endpoint 'npipe:////./pipe/docker_engine' `
+    -ProjectName 'whaleguard-redlab'
+if (
+    -not $inventory.OwnedByCurrentRoot -or
+    -not $inventory.Complete -or
+    -not $inventory.FullyRunning
+) {{
+    exit 2
+}}
+$script:InventoryLabels = {ps_quote(mismatched_environment_label)}
+try {{
+    $null = Get-WgComposeProjectInventory `
+        -Docker 'C:\\trusted-docker.exe' `
+        -Endpoint 'npipe:////./pipe/docker_engine' `
+        -ProjectName 'whaleguard-redlab'
+    exit 3
+}}
+catch {{
+    if ($_.Exception.Message -notmatch 'exact Compose topology') {{ exit 4 }}
+}}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_compose_project_resolution_recovers_the_unique_running_legacy_stack() -> None:
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgComposeProjectName {{ return 'whaleguard-redlab-hashed000001' }}
+function Get-WgComposeProjectInventory {{
+    param([string]$Docker, [string]$Endpoint, [string]$ProjectName)
+    if ($ProjectName -eq 'whaleguard-redlab') {{
+        return [PSCustomObject]@{{
+            ProjectName = $ProjectName
+            Exists = $true
+            OwnedByCurrentRoot = $true
+            Complete = $true
+            FullyRunning = $true
+            ContainerCount = 8
+            RunningCount = 8
+        }}
+    }}
+    return [PSCustomObject]@{{
+        ProjectName = $ProjectName
+        Exists = $true
+        OwnedByCurrentRoot = $true
+        Complete = $true
+        FullyRunning = $false
+        ContainerCount = 8
+        RunningCount = 6
+    }}
+}}
+$selected = Resolve-WgComposeProjectName `
+    -Docker 'C:\\trusted-docker.exe' `
+    -Endpoint 'npipe:////./pipe/docker_engine'
+if ($selected -cne 'whaleguard-redlab') {{ exit 2 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_compose_project_selection_marker_round_trips_and_is_checkout_bound(
+    tmp_path: Path,
+) -> None:
+    first_root = tmp_path / "first checkout"
+    second_root = tmp_path / "second checkout"
+    selection_directory = tmp_path / "selection state"
+    first_root.mkdir()
+    second_root.mkdir()
+    source = f"""
+. {ps_quote(COMMON)}
+$script:testRoot = {ps_quote(first_root)}
+function Get-WgRoot {{ return $script:testRoot }}
+function Get-WgComposeSelectionDirectory {{ return {ps_quote(selection_directory)} }}
+$null = Save-WgComposeProjectSelection -ProjectName 'whaleguard-redlab'
+if ((Read-WgComposeProjectSelection) -cne 'whaleguard-redlab') {{ exit 2 }}
+$script:testRoot = {ps_quote(second_root)}
+if ((Read-WgComposeProjectSelection) -ne '') {{ exit 3 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_compose_project_resolution_uses_persisted_legacy_when_both_stacks_are_down() -> None:
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgComposeProjectName {{ return 'whaleguard-redlab-hashed000001' }}
+function Read-WgComposeProjectSelection {{ return 'whaleguard-redlab' }}
+function Get-WgComposeProjectInventory {{
+    param([string]$Docker, [string]$Endpoint, [string]$ProjectName)
+    return [PSCustomObject]@{{
+        ProjectName = $ProjectName
+        Exists = $false
+        OwnedByCurrentRoot = $false
+        Complete = $false
+        FullyRunning = $false
+        ContainerCount = 0
+        RunningCount = 0
+    }}
+}}
+$selected = Resolve-WgComposeProjectName `
+    -Docker 'C:\\trusted-docker.exe' `
+    -Endpoint 'npipe:////./pipe/docker_engine'
+if ($selected -cne 'whaleguard-redlab') {{ exit 2 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_compose_project_resolution_adopts_owned_legacy_when_hash_has_no_containers() -> None:
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgComposeProjectName {{ return 'whaleguard-redlab-hashed000001' }}
+function Get-WgComposeProjectInventory {{
+    param([string]$Docker, [string]$Endpoint, [string]$ProjectName)
+    $legacy = $ProjectName -eq 'whaleguard-redlab'
+    return [PSCustomObject]@{{
+        ProjectName = $ProjectName
+        Exists = $legacy
+        OwnedByCurrentRoot = $legacy
+        Complete = $legacy
+        FullyRunning = $legacy
+        ContainerCount = $(if ($legacy) {{ 8 }} else {{ 0 }})
+        RunningCount = $(if ($legacy) {{ 8 }} else {{ 0 }})
+    }}
+}}
+$selected = Resolve-WgComposeProjectName `
+    -Docker 'C:\\trusted-docker.exe' `
+    -Endpoint 'npipe:////./pipe/docker_engine'
+if ($selected -cne 'whaleguard-redlab') {{ exit 2 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_compose_project_resolution_fails_closed_when_two_stacks_are_ambiguous() -> None:
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgComposeProjectName {{ return 'whaleguard-redlab-hashed000001' }}
+function Read-WgComposeProjectSelection {{ return 'whaleguard-redlab' }}
+function Get-WgComposeProjectInventory {{
+    return [PSCustomObject]@{{
+        Exists = $true
+        OwnedByCurrentRoot = $true
+        Complete = $true
+        FullyRunning = $true
+        ContainerCount = 8
+        RunningCount = 8
+    }}
+}}
+try {{
+    $null = Resolve-WgComposeProjectName `
+        -Docker 'C:\\trusted-docker.exe' `
+        -Endpoint 'npipe:////./pipe/docker_engine'
+    exit 2
+}}
+catch {{
+    if ($_.Exception.Message -notmatch 'No project was modified') {{ exit 3 }}
+}}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_compose_project_resolution_ignores_foreign_legacy_stack() -> None:
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgComposeProjectName {{ return 'whaleguard-redlab-hashed000001' }}
+function Read-WgComposeProjectSelection {{ return 'whaleguard-redlab' }}
+function Get-WgComposeProjectInventory {{
+    param([string]$Docker, [string]$Endpoint, [string]$ProjectName)
+    $legacy = $ProjectName -eq 'whaleguard-redlab'
+    return [PSCustomObject]@{{
+        ProjectName = $ProjectName
+        Exists = $legacy
+        OwnedByCurrentRoot = $false
+        Complete = $false
+        FullyRunning = $false
+        ContainerCount = $(if ($legacy) {{ 8 }} else {{ 0 }})
+        RunningCount = 0
+    }}
+}}
+$selected = Resolve-WgComposeProjectName `
+    -Docker 'C:\\trusted-docker.exe' `
+    -Endpoint 'npipe:////./pipe/docker_engine'
+if ($selected -cne 'whaleguard-redlab-hashed000001') {{ exit 2 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_compose_project_resolution_rejects_foreign_checkout_hash() -> None:
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgComposeProjectName {{ return 'whaleguard-redlab-hashed000001' }}
+function Get-WgComposeProjectInventory {{
+    param([string]$Docker, [string]$Endpoint, [string]$ProjectName)
+    $canonical = $ProjectName -eq 'whaleguard-redlab-hashed000001'
+    return [PSCustomObject]@{{
+        ProjectName = $ProjectName
+        Exists = $canonical
+        OwnedByCurrentRoot = $false
+        Complete = $false
+        FullyRunning = $false
+        ContainerCount = $(if ($canonical) {{ 8 }} else {{ 0 }})
+        RunningCount = 0
+    }}
+}}
+try {{
+    $null = Resolve-WgComposeProjectName `
+        -Docker 'C:\\trusted-docker.exe' `
+        -Endpoint 'npipe:////./pipe/docker_engine'
+    exit 2
+}}
+catch {{
+    if ($_.Exception.Message -notmatch 'owned by another working directory') {{ exit 3 }}
+}}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_start_failure_restores_only_a_verified_preexisting_stack_without_build() -> None:
+    start = (ROOT / "scripts" / "start-whaleguard.ps1").read_text(encoding="utf-8")
+    assert "$selectedInventory.Exists -and $selectedInventory.OwnedByCurrentRoot" in start
+    assert 'Invoke-WgCompose -Arguments @("up", "-d") -ProjectName $composeProject' in start
+    assert (
+        'Invoke-WgCompose -Arguments @("up", "-d", "--build") -ProjectName $composeProject' in start
+    )
+    assert 'Invoke-WgCompose -Arguments @("up", "-d", "--volumes")' not in start
+
+
+def test_start_persists_project_selection_before_inventory_or_migration() -> None:
+    start = (ROOT / "scripts" / "start-whaleguard.ps1").read_text(encoding="utf-8")
+    resolve = start.index("$composeProject = Resolve-WgComposeProjectName")
+    save = start.index("Save-WgComposeProjectSelection -ProjectName $composeProject")
+    inventory = start.index("$selectedInventory = Get-WgComposeProjectInventory")
+    migration = start.index("$migration = Invoke-WgRedisVolumeMigration")
+    assert resolve < save < inventory < migration
+
+
+def test_docker_4881_stale_socket_directory_is_renamed_and_retained(tmp_path: Path) -> None:
+    install_root = tmp_path / "DockerDesktop"
+    desktop = install_root / "Docker Desktop.exe"
+    install_root.mkdir()
+    desktop.write_bytes(b"signed fixture")
+    docker_root = tmp_path / "Docker"
+    runtime = docker_root / "run"
+    runtime.mkdir(parents=True)
+    for name in (
+        "dockerEthernetVfkit",
+        "dockerInference",
+        "sailor-ingest.sock",
+        "userAnalyticsOtlpHttp.sock",
+    ):
+        (runtime / name).write_bytes(b"")
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgCanonicalDockerInstallRoots {{ return @({ps_quote(install_root)}) }}
+function Get-WgDockerBinaryEvidence {{
+    return [PSCustomObject]@{{
+        Path = {ps_quote(desktop)}
+        Version = [version]'4.88.1.237512'
+    }}
+}}
+function Get-WgDockerRuntimeDirectory {{ return {ps_quote(runtime)} }}
+function Get-WgDockerRuntimeProcesses {{ return @() }}
+function Get-WgDockerRuntimeEntryEvidence {{
+    return @(
+        [PSCustomObject]@{{
+            Name='dockerEthernetVfkit'; IsFile=$true; Length=0; IsReparsePoint=$true
+        }},
+        [PSCustomObject]@{{
+            Name='dockerInference'; IsFile=$true; Length=0; IsReparsePoint=$true
+        }},
+        [PSCustomObject]@{{
+            Name='sailor-ingest.sock'; IsFile=$true; Length=0; IsReparsePoint=$true
+        }},
+        [PSCustomObject]@{{
+            Name='userAnalyticsOtlpHttp.sock'; IsFile=$true; Length=0; IsReparsePoint=$true
+        }}
+    )
+}}
+(Get-Item -LiteralPath {ps_quote(runtime)}).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-5)
+$result = Invoke-WgDockerRuntimeSocketRecovery -DockerDesktopPath {ps_quote(desktop)}
+if ($result.Status -cne 'stale_socket_directory_isolated') {{ exit 2 }}
+if (Test-Path -LiteralPath {ps_quote(runtime)}) {{ exit 3 }}
+if (-not (Test-Path -LiteralPath $result.BackupDirectory -PathType Container)) {{ exit 4 }}
+$expectedParent = [IO.Path]::GetFullPath({ps_quote(docker_root)})
+$backupParent = [IO.Path]::GetFullPath((Split-Path $result.BackupDirectory -Parent))
+if ($backupParent -cne $expectedParent) {{ exit 5 }}
+$backupLeaf = Split-Path $result.BackupDirectory -Leaf
+if ($backupLeaf -notmatch '^run\\.stale-[0-9]{{8}}T[0-9]{{9}}Z-[0-9a-f]{{8}}$') {{ exit 6 }}
+if (@(Get-ChildItem -LiteralPath $result.BackupDirectory -Force).Count -ne 4) {{ exit 7 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_docker_stale_socket_recovery_rejects_unexpected_data(tmp_path: Path) -> None:
+    install_root = tmp_path / "DockerDesktop"
+    desktop = install_root / "Docker Desktop.exe"
+    install_root.mkdir()
+    desktop.write_bytes(b"signed fixture")
+    runtime = tmp_path / "Docker" / "run"
+    runtime.mkdir(parents=True)
+    (runtime / "sailor-ingest.sock").write_bytes(b"")
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgCanonicalDockerInstallRoots {{ return @({ps_quote(install_root)}) }}
+function Get-WgDockerBinaryEvidence {{
+    return [PSCustomObject]@{{ Version = [version]'4.88.1.237512' }}
+}}
+function Get-WgDockerRuntimeDirectory {{ return {ps_quote(runtime)} }}
+function Get-WgDockerRuntimeProcesses {{ return @() }}
+(Get-Item -LiteralPath {ps_quote(runtime)}).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-5)
+try {{
+    $null = Invoke-WgDockerRuntimeSocketRecovery -DockerDesktopPath {ps_quote(desktop)}
+    exit 2
+}}
+catch {{
+    if ($_.Exception.Message -notmatch 'unexpected data') {{ exit 3 }}
+}}
+if (-not (Test-Path -LiteralPath {ps_quote(runtime)} -PathType Container)) {{ exit 4 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_docker_4881_secrets_socket_directory_is_renamed_and_retained(tmp_path: Path) -> None:
+    install_root = tmp_path / "DockerDesktop"
+    desktop = install_root / "Docker Desktop.exe"
+    install_root.mkdir()
+    desktop.write_bytes(b"signed fixture")
+    secrets_runtime = tmp_path / "docker-secrets-engine"
+    secrets_runtime.mkdir()
+    (secrets_runtime / "engine.sock").write_bytes(b"")
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgCanonicalDockerInstallRoots {{ return @({ps_quote(install_root)}) }}
+function Get-WgDockerBinaryEvidence {{
+    return [PSCustomObject]@{{ Version = [version]'4.88.1.237512' }}
+}}
+function Get-WgDockerSecretsRuntimeDirectory {{ return {ps_quote(secrets_runtime)} }}
+function Get-WgDockerRuntimeProcesses {{ return @() }}
+function Get-WgDockerRuntimeEntryEvidence {{
+    return @([PSCustomObject]@{{
+        Name='engine.sock'; IsFile=$true; Length=0; IsReparsePoint=$true
+    }})
+}}
+$secretsItem = Get-Item -LiteralPath {ps_quote(secrets_runtime)}
+$secretsItem.LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-5)
+$result = Invoke-WgDockerRuntimeSocketRecovery `
+    -DockerDesktopPath {ps_quote(desktop)} -RuntimeKind 'secrets'
+if ($result.Status -cne 'stale_socket_directory_isolated') {{ exit 2 }}
+if ($result.RuntimeKind -cne 'secrets') {{ exit 3 }}
+if (Test-Path -LiteralPath {ps_quote(secrets_runtime)}) {{ exit 4 }}
+$backupLeaf = Split-Path $result.BackupDirectory -Leaf
+if ($backupLeaf -notmatch '^docker-secrets-engine\\.stale-') {{ exit 5 }}
+if (-not (Test-Path -LiteralPath (Join-Path $result.BackupDirectory 'engine.sock'))) {{ exit 6 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_docker_socket_recovery_validates_both_directories_before_moving_either(
+    tmp_path: Path,
+) -> None:
+    install_root = tmp_path / "DockerDesktop"
+    desktop = install_root / "Docker Desktop.exe"
+    install_root.mkdir()
+    desktop.write_bytes(b"signed fixture")
+    desktop_runtime = tmp_path / "Docker" / "run"
+    secrets_runtime = tmp_path / "docker-secrets-engine"
+    desktop_runtime.mkdir(parents=True)
+    secrets_runtime.mkdir()
+    (desktop_runtime / "sailor-ingest.sock").write_bytes(b"")
+    (secrets_runtime / "engine.sock").write_bytes(b"")
+    source = f"""
+. {ps_quote(COMMON)}
+function Get-WgCanonicalDockerInstallRoots {{ return @({ps_quote(install_root)}) }}
+function Get-WgDockerBinaryEvidence {{
+    return [PSCustomObject]@{{ Version = [version]'4.88.1.237512' }}
+}}
+function Get-WgDockerRuntimeDirectory {{ return {ps_quote(desktop_runtime)} }}
+function Get-WgDockerSecretsRuntimeDirectory {{ return {ps_quote(secrets_runtime)} }}
+function Get-WgDockerRuntimeProcesses {{ return @() }}
+function Get-WgDockerRuntimeEntryEvidence {{
+    param([string]$RuntimeDirectory)
+    $actualRuntime = [IO.Path]::GetFullPath($RuntimeDirectory)
+    $expectedRuntime = [IO.Path]::GetFullPath({ps_quote(desktop_runtime)})
+    if ($actualRuntime -eq $expectedRuntime) {{
+        return @([PSCustomObject]@{{
+            Name='sailor-ingest.sock'; IsFile=$true; Length=0; IsReparsePoint=$true
+        }})
+    }}
+    return @([PSCustomObject]@{{
+        Name='engine.sock'; IsFile=$true; Length=1; IsReparsePoint=$false
+    }})
+}}
+$desktopItem = Get-Item -LiteralPath {ps_quote(desktop_runtime)}
+$desktopItem.LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-5)
+$secretsItem = Get-Item -LiteralPath {ps_quote(secrets_runtime)}
+$secretsItem.LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-5)
+try {{
+    $null = Invoke-WgDockerRuntimeSocketRecoveries -DockerDesktopPath {ps_quote(desktop)}
+    exit 2
+}}
+catch {{
+    if ($_.Exception.Message -notmatch 'unexpected data') {{ exit 3 }}
+}}
+if (-not (Test-Path -LiteralPath {ps_quote(desktop_runtime)} -PathType Container)) {{ exit 4 }}
+if (-not (Test-Path -LiteralPath {ps_quote(secrets_runtime)} -PathType Container)) {{ exit 5 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
 def test_windows_start_uses_native_redis_migration_without_host_python() -> None:
     start = (ROOT / "scripts" / "start-whaleguard.ps1").read_text(encoding="utf-8-sig")
     common = COMMON.read_text(encoding="utf-8-sig")
@@ -862,6 +1342,11 @@ def test_windows_start_uses_native_redis_migration_without_host_python() -> None
     assert "Invoke-WgRedisVolumeMigration" in start
     assert "Get-WgPython" not in start
     assert "migrate_redis_volume.py" not in start
+    assert "$restoreExistingStackOnFailure" in start
+    assert 'Invoke-WgCompose -Arguments @("up", "-d") -ProjectName $composeProject' in start
+    assert start.index("$restoreExistingStackOnFailure = (") < start.index(
+        "Invoke-WgRedisVolumeMigration"
+    )
     assert '"volume", "rm"' not in common
     assert '"volume", "prune"' not in common
 

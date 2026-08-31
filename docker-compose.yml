@@ -78,6 +78,8 @@ services:
       WHALEGUARD_ALLOWED_ORIGINS: http://127.0.0.1:${WEB_PORT:-3000},http://localhost:${WEB_PORT:-3000}
       MOCK_AGENT_URL: http://mock-agent:8102
       MOCK_MCP_URL: http://mock-mcp-server:8103
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:

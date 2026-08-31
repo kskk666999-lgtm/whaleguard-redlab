@@ -10,12 +10,13 @@ import pytest
 from pydantic import ValidationError
 from rq import Retry
 from rq.serializers import JSONSerializer
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from whaleguard_api import queueing
 from whaleguard_api.config import Settings
 from whaleguard_api.database import Base
+from whaleguard_api.models import AuthorizationScope
 from whaleguard_api.seed import seed_database
 
 
@@ -140,8 +141,41 @@ def test_first_run_credentials_are_atomic_and_not_overwritten() -> None:
         assert "created_at=" in content
         original_stat = credentials_path.stat()
 
+        expected_exact_targets = {
+            "http://mock-agent:8102/tasks",
+            "http://mock-llm:8101/v1/models",
+            "http://mock-llm:8101/v1/chat/completions",
+        }
+        with Session(engine) as db:
+            exact_scopes = list(
+                db.scalars(
+                    select(AuthorizationScope).where(AuthorizationScope.target_type == "url")
+                )
+            )
+            assert {scope.target_value for scope in exact_scopes} == expected_exact_targets
+            assert all(scope.is_authorized for scope in exact_scopes)
+            revoked = next(
+                scope
+                for scope in exact_scopes
+                if scope.target_value == "http://mock-agent:8102/tasks"
+            )
+            revoked_id = revoked.id
+            revoked.is_authorized = False
+            db.commit()
+
         with Session(engine) as db:
             assert seed_database(db, settings) is None
+            matching_scopes = list(
+                db.scalars(
+                    select(AuthorizationScope).where(
+                        AuthorizationScope.target_type == "url",
+                        AuthorizationScope.target_value == "http://mock-agent:8102/tasks",
+                    )
+                )
+            )
+            assert len(matching_scopes) == 1
+            assert matching_scopes[0].id == revoked_id
+            assert matching_scopes[0].is_authorized is False
         assert credentials_path.read_text(encoding="utf-8") == content
         assert credentials_path.stat().st_mtime_ns == original_stat.st_mtime_ns
         if os.name != "nt":

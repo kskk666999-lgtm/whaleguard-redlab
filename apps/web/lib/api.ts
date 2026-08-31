@@ -1,8 +1,20 @@
 "use client";
 
 import { clearSession, getCsrfToken, getToken } from "@/lib/auth";
-import type { ApiPage, ApiRecord } from "@/lib/types";
-import { apiEntitySchema, loginResponseSchema } from "@/lib/schemas";
+import type {
+  ApiPage,
+  ApiRecord,
+  SystemStatus,
+  UserPreferences,
+  UserPreferencesUpdate,
+} from "@/lib/types";
+import {
+  apiEntitySchema,
+  loginResponseSchema,
+  systemStatusSchema,
+  userPreferencesSchema,
+  userPreferencesUpdateSchema,
+} from "@/lib/schemas";
 import type { z } from "zod";
 
 export const API_BASE = (process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000/api/v1").replace(/\/$/, "");
@@ -92,6 +104,27 @@ export async function login(username: string, password: string) {
     auth: false,
   });
   return loginResponseSchema.parse(raw);
+}
+
+export async function getUserPreferences(): Promise<UserPreferences> {
+  const raw = await apiRequest<unknown>("/auth/preferences");
+  return userPreferencesSchema.parse(raw);
+}
+
+export async function patchUserPreferences(
+  value: UserPreferencesUpdate,
+): Promise<UserPreferences> {
+  const body = userPreferencesUpdateSchema.parse(value);
+  const raw = await apiRequest<unknown>("/auth/preferences", {
+    method: "PATCH",
+    body,
+  });
+  return userPreferencesSchema.parse(raw);
+}
+
+export async function getSystemStatus(): Promise<SystemStatus> {
+  const raw = await apiRequest<unknown>("/system/status");
+  return systemStatusSchema.parse(raw);
 }
 
 export function toPage<T extends ApiRecord>(value: unknown): ApiPage<T> {
