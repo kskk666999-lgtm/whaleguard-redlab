@@ -18,13 +18,21 @@ def _config() -> Config:
     return config
 
 
+def _prepare_environment(database_url: str) -> None:
+    os.environ["DATABASE_URL"] = database_url
+    os.environ["WHALEGUARD_ENVIRONMENT"] = "test"
+    os.environ["WHALEGUARD_SEED_ON_STARTUP"] = "false"
+    os.environ["WHALEGUARD_AUTO_CREATE_SCHEMA"] = "false"
+    # Alembic does not enqueue work. Keep this standalone round-trip independent
+    # from a developer's .env and from production worker credentials.
+    os.environ["WHALEGUARD_TASK_QUEUE_ENABLED"] = "false"
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="whaleguard-migration-") as directory:
         database = Path(directory) / "migration.db"
         database_url = f"sqlite:///{database.as_posix()}"
-        os.environ["DATABASE_URL"] = database_url
-        os.environ["WHALEGUARD_ENVIRONMENT"] = "test"
-        os.environ["WHALEGUARD_SEED_ON_STARTUP"] = "false"
+        _prepare_environment(database_url)
 
         config = _config()
         command.upgrade(config, "head")

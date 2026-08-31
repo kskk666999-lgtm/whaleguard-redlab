@@ -595,6 +595,23 @@ def test_workflows_and_exception_policy_are_valid() -> None:
     assert not [error for path in workflows for error in _validate_workflow(path)]
 
     security_workflow = (WORKFLOW_DIR / "security.yml").read_text(encoding="utf-8")
+    ci_workflow = (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    ci_config = yaml.safe_load(ci_workflow)
+    assert ci_config["env"]["PYYAML_VERSION"] == "6.0.3"
+    docker_steps = ci_config["jobs"]["docker-smoke"]["steps"]
+    install_index = next(
+        index
+        for index, step in enumerate(docker_steps)
+        if step.get("name") == "Install pinned Compose validator dependency"
+    )
+    validate_index = next(
+        index
+        for index, step in enumerate(docker_steps)
+        if "python scripts/validate_compose.py" in str(step.get("run", ""))
+    )
+    assert "PyYAML==${PYYAML_VERSION}" in docker_steps[install_index]["run"]
+    assert install_index < validate_index
+
     assert "--pip-exit-code artifacts/security/pip-audit.exit-code" in security_workflow
     assert '1) echo "pip-audit findings are preserved;' in security_workflow
     assert 'test "$pip_status" -eq 0' not in security_workflow
