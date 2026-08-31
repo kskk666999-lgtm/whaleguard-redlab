@@ -19,6 +19,26 @@ def ps_quote(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def ps_set_current_owner(path: Path) -> str:
+    quoted_path = ps_quote(path)
+    return f"""
+$wgFixtureSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$wgFixtureRule = [Security.AccessControl.FileSystemAccessRule]::new(
+    $wgFixtureSid,
+    [Security.AccessControl.FileSystemRights]::FullControl,
+    [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+    [Security.AccessControl.PropagationFlags]::None,
+    [Security.AccessControl.AccessControlType]::Allow
+)
+foreach ($wgFixturePath in @((Split-Path {quoted_path} -Parent), {quoted_path})) {{
+    $wgFixtureAcl = [IO.Directory]::GetAccessControl($wgFixturePath)
+    $wgFixtureAcl.SetOwner($wgFixtureSid)
+    $wgFixtureAcl.SetAccessRule($wgFixtureRule)
+    [IO.Directory]::SetAccessControl($wgFixturePath, $wgFixtureAcl)
+}}
+"""
+
+
 def run_ps(source: str, *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603
         [
@@ -1196,6 +1216,7 @@ function Get-WgDockerRuntimeEntryEvidence {{
         }}
     )
 }}
+{ps_set_current_owner(runtime)}
 (Get-Item -LiteralPath {ps_quote(runtime)}).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-5)
 $result = Invoke-WgDockerRuntimeSocketRecovery -DockerDesktopPath {ps_quote(desktop)}
 if ($result.Status -cne 'stale_socket_directory_isolated') {{ exit 2 }}
@@ -1229,6 +1250,7 @@ function Get-WgDockerBinaryEvidence {{
 }}
 function Get-WgDockerRuntimeDirectory {{ return {ps_quote(runtime)} }}
 function Get-WgDockerRuntimeProcesses {{ return @() }}
+{ps_set_current_owner(runtime)}
 (Get-Item -LiteralPath {ps_quote(runtime)}).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-5)
 try {{
     $null = Invoke-WgDockerRuntimeSocketRecovery -DockerDesktopPath {ps_quote(desktop)}
@@ -1265,6 +1287,7 @@ function Get-WgDockerRuntimeEntryEvidence {{
         Name='engine.sock'; IsFile=$true; Length=0; IsReparsePoint=$true
     }})
 }}
+{ps_set_current_owner(secrets_runtime)}
 $secretsItem = Get-Item -LiteralPath {ps_quote(secrets_runtime)}
 $secretsItem.LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-5)
 $result = Invoke-WgDockerRuntimeSocketRecovery `
@@ -1316,6 +1339,8 @@ function Get-WgDockerRuntimeEntryEvidence {{
         Name='engine.sock'; IsFile=$true; Length=1; IsReparsePoint=$false
     }})
 }}
+{ps_set_current_owner(desktop_runtime)}
+{ps_set_current_owner(secrets_runtime)}
 $desktopItem = Get-Item -LiteralPath {ps_quote(desktop_runtime)}
 $desktopItem.LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-5)
 $secretsItem = Get-Item -LiteralPath {ps_quote(secrets_runtime)}
@@ -1333,6 +1358,14 @@ exit 0
 """
     result = run_ps(source)
     assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_docker_socket_recovery_keeps_current_user_ownership_gate() -> None:
+    common = COMMON.read_text(encoding="utf-8-sig")
+
+    assert "[Security.AccessControl.AccessControlSections]::Owner" in common
+    assert "$ownerSid -ne $currentSid" in common
+    assert "Docker runtime directory is not owned by the current Windows user." in common
 
 
 def test_windows_start_uses_native_redis_migration_without_host_python() -> None:
