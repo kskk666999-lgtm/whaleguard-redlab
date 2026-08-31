@@ -23,7 +23,7 @@
 
 - 迁移会按 sequence/时间顺序将旧 `TestRun.event_log` 回填到 `run_events`；旧 JSON 字段暂时保留以兼容现有 API，不扩大历史 payload。
 - `RunEvent` 成为事件权威来源；载荷在持久化前递归脱敏并限制为 64 KiB，旧 `TestRun.event_log` 在 OpenAPI 中标记 deprecated。
-- API、Worker、Policy Engine 和 Web 版本元数据统一为 `0.1.1`；开发分支仍保持 `[Unreleased]`，不代表正式 tag 已创建。
+- API、Worker、Policy Engine、Web 和三个 AgentArena Mock 服务的版本元数据统一为 `0.1.1`；开发分支仍保持 `[Unreleased]`，不代表正式 tag 已创建。
 - Redis 主服务固定以 `redis` 用户、`cap_drop: ALL` 和 `no-new-privileges` 运行；Windows 一键启动与 `make dev` / `make docker-up` 会在主服务启动前自动执行旧卷兼容迁移。
 
 ### Fixed

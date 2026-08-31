@@ -76,7 +76,10 @@ def configured_private_mcp(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 def test_health_and_capabilities_have_no_shell_or_request_url() -> None:
     with TestClient(app) as client:
-        assert client.get("/health").json()["status"] == "healthy"
+        health = client.get("/health").json()
+        assert health["status"] == "healthy"
+        assert health["version"] == agent_main.APP_VERSION
+        assert client.get("/openapi.json").json()["info"]["version"] == agent_main.APP_VERSION
         capabilities = client.get("/v1/capabilities").json()
     assert capabilities["arbitrary_shell"] is False
     assert capabilities["request_supplied_target_url"] is False

@@ -1,4 +1,4 @@
-from app.main import MODEL_ID, app
+from app.main import APP_VERSION, MODEL_ID, app
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
@@ -8,6 +8,8 @@ def test_health_and_model_listing() -> None:
     health = client.get("/health")
     assert health.status_code == 200
     assert health.json()["status"] == "healthy"
+    assert health.json()["version"] == APP_VERSION
+    assert client.get("/openapi.json").json()["info"]["version"] == APP_VERSION
 
     models = client.get("/v1/models")
     assert models.status_code == 200

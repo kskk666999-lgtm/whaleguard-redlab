@@ -17,6 +17,7 @@ from fastapi import FastAPI, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SERVICE_NAME = "whaleguard-mock-agent"
+APP_VERSION = "0.1.1"
 MAX_MCP_RESPONSE_BYTES = 64 * 1024
 PRIVATE_SERVICE_NETWORKS = tuple(
     ipaddress.ip_network(cidr)
@@ -478,14 +479,14 @@ def _trace(
 def create_app() -> FastAPI:
     app = FastAPI(
         title="WhaleGuard Mock Agent",
-        version="1.0.0",
+        version=APP_VERSION,
         description="Transparent allow-listed agent for private AgentArena evaluation.",
     )
 
     @app.get("/health", tags=["system"])
     @app.get("/healthz", tags=["system"], include_in_schema=False)
     async def healthz() -> dict[str, str]:
-        return {"status": "healthy", "service": SERVICE_NAME, "version": "1.0.0"}
+        return {"status": "healthy", "service": SERVICE_NAME, "version": APP_VERSION}
 
     @app.get("/v1/capabilities", tags=["agent"])
     async def capabilities() -> dict[str, Any]:

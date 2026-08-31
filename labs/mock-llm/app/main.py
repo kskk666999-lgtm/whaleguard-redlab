@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SERVICE_NAME = "whaleguard-mock-llm"
+APP_VERSION = "0.1.1"
 MODEL_ID = "whaleguard-safe-mock-1"
 MAX_CONTENT_CHARS = 8_000
 
@@ -225,14 +226,14 @@ def _judge_answer(messages: list[ChatMessage]) -> str | None:
 def create_app() -> FastAPI:
     app = FastAPI(
         title="WhaleGuard Mock LLM",
-        version="1.0.0",
+        version=APP_VERSION,
         description="Deterministic OpenAI-compatible service for private AgentArena labs.",
     )
 
     @app.get("/health", tags=["system"])
     @app.get("/healthz", tags=["system"], include_in_schema=False)
     async def healthz() -> dict[str, str]:
-        return {"status": "healthy", "service": SERVICE_NAME, "version": "1.0.0"}
+        return {"status": "healthy", "service": SERVICE_NAME, "version": APP_VERSION}
 
     @app.get("/v1/models", tags=["openai-compatible"])
     async def list_models() -> dict[str, object]:

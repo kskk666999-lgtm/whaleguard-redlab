@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import shutil
 import subprocess
 import tarfile
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -35,6 +37,54 @@ from scripts.security.summarize_dependency_audits import (
 from scripts.security.validate_workflows import WORKFLOW_DIR, _validate_workflow
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+def _literal_string_assignment(path: Path, name: str) -> str:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id == name:
+            value = ast.literal_eval(node.value)
+            assert isinstance(value, str)
+            return value
+    raise AssertionError(f"{path} does not define a literal {name}")
+
+
+def test_all_release_component_versions_are_aligned() -> None:
+    python_projects = (
+        "apps/api",
+        "apps/worker",
+        "packages/policy-engine",
+        "labs/mock-llm",
+        "labs/mock-agent",
+        "labs/mock-mcp-server",
+    )
+    versions = {
+        project: tomllib.loads((ROOT / project / "pyproject.toml").read_text(encoding="utf-8"))[
+            "project"
+        ]["version"]
+        for project in python_projects
+    }
+    versions["apps/web"] = json.loads((ROOT / "apps/web/package.json").read_text(encoding="utf-8"))[
+        "version"
+    ]
+    web_lock = json.loads((ROOT / "apps/web/package-lock.json").read_text(encoding="utf-8"))
+    versions["apps/web lock"] = web_lock["version"]
+    versions["apps/web lock root"] = web_lock["packages"][""]["version"]
+    versions["apps/api runtime"] = _literal_string_assignment(
+        ROOT / "apps/api/src/whaleguard_api/__init__.py", "__version__"
+    )
+    versions["policy runtime"] = _literal_string_assignment(
+        ROOT / "packages/policy-engine/src/whaleguard_policy/__init__.py", "__version__"
+    )
+    for service in ("mock-llm", "mock-agent", "mock-mcp-server"):
+        versions[f"labs/{service} runtime"] = _literal_string_assignment(
+            ROOT / f"labs/{service}/app/main.py", "APP_VERSION"
+        )
+
+    assert set(versions.values()) == {versions["apps/api"]}, versions
 
 
 def test_checksum_matches_hashlib(tmp_path: Path) -> None:

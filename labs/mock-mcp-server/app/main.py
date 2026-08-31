@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 SERVICE_NAME = "whaleguard-mock-mcp-server"
+APP_VERSION = "0.1.1"
 PROTOCOL_VERSION = "2025-06-18"
 MAX_DEMO_NOTES = 100
 
@@ -434,20 +435,20 @@ def _mcp_result(response: ToolCallResponse) -> dict[str, Any]:
 def create_app() -> FastAPI:
     app = FastAPI(
         title="WhaleGuard Mock MCP Server",
-        version="1.0.0",
+        version=APP_VERSION,
         description="Metadata and five safe fixture tools for private AgentArena labs.",
     )
 
     @app.get("/health", tags=["system"])
     @app.get("/healthz", tags=["system"], include_in_schema=False)
     async def healthz() -> dict[str, str]:
-        return {"status": "healthy", "service": SERVICE_NAME, "version": "1.0.0"}
+        return {"status": "healthy", "service": SERVICE_NAME, "version": APP_VERSION}
 
     @app.get("/metadata", tags=["metadata"])
     async def metadata() -> dict[str, Any]:
         return {
             "name": SERVICE_NAME,
-            "version": "1.0.0",
+            "version": APP_VERSION,
             "protocol_version": PROTOCOL_VERSION,
             "transport": ["http-json-rpc", "rest-fixture"],
             "execution_boundary": "five-hard-coded-tools-only",
@@ -480,7 +481,7 @@ def create_app() -> FastAPI:
             result: dict[str, Any] = {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": SERVICE_NAME, "version": "1.0.0"},
+                "serverInfo": {"name": SERVICE_NAME, "version": APP_VERSION},
                 "instructions": "Fictional, non-destructive AgentArena fixtures only.",
             }
         elif payload.method == "notifications/initialized":

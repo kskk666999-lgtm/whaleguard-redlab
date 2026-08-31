@@ -1,12 +1,16 @@
-from app.main import NoteStore, app
+from app.main import APP_VERSION, NoteStore, app
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
 
 
 def test_health_and_metadata_are_explicitly_constrained() -> None:
-    assert client.get("/health").json()["status"] == "healthy"
+    health = client.get("/health").json()
+    assert health["status"] == "healthy"
+    assert health["version"] == APP_VERSION
+    assert client.get("/openapi.json").json()["info"]["version"] == APP_VERSION
     metadata = client.get("/metadata").json()
+    assert metadata["version"] == APP_VERSION
     assert metadata["arbitrary_shell"] is False
     assert metadata["external_network_access"] is False
     assert metadata["execution_boundary"] == "five-hard-coded-tools-only"
@@ -147,6 +151,7 @@ def test_json_rpc_initialize_list_call_and_unknown_method() -> None:
         json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
     ).json()
     assert initialized["result"]["capabilities"]["tools"]["listChanged"] is False
+    assert initialized["result"]["serverInfo"]["version"] == APP_VERSION
 
     listed = client.post(
         "/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
