@@ -16,6 +16,7 @@ env:
   PYTHON_VERSION: "3.11"
   NODE_VERSION: "22"
   PIP_VERSION: "26.2.1"
+  PYTEST_VERSION: "9.0.3"
   PYYAML_VERSION: "6.0.3"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   NEXT_TELEMETRY_DISABLED: "1"
@@ -81,11 +82,34 @@ jobs:
           python -m pytest -q labs/mock-agent
           python -m pytest -q labs/mock-mcp-server
 
-      - name: Run Alembic round trip and Windows automation tests
+      - name: Run Alembic round trip and portable automation tests
         run: |
           python scripts/test_migrations.py
-          python -m pytest -q scripts/tests
+          python -m pytest -q scripts/tests --ignore=scripts/tests/test_windows_scripts.py
           python -m pytest -q scripts/security/tests
+
+  windows-automation:
+    name: Windows PowerShell 5.1 automation
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pinned Windows test dependency
+        run: |
+          python -m pip install "pip==$env:PIP_VERSION"
+          python -m pip install "pytest==$env:PYTEST_VERSION"
+
+      - name: Run Windows PowerShell 5.1 automation tests
+        run: python -m pytest -q scripts/tests/test_windows_scripts.py
 
   frontend:
     name: Frontend lint, typecheck, component, build

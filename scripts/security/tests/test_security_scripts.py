@@ -597,7 +597,16 @@ def test_workflows_and_exception_policy_are_valid() -> None:
     security_workflow = (WORKFLOW_DIR / "security.yml").read_text(encoding="utf-8")
     ci_workflow = (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
     ci_config = yaml.safe_load(ci_workflow)
+    assert ci_config["env"]["PYTEST_VERSION"] == "9.0.3"
     assert ci_config["env"]["PYYAML_VERSION"] == "6.0.3"
+    backend_steps = ci_config["jobs"]["backend"]["steps"]
+    backend_test_commands = "\n".join(str(step.get("run", "")) for step in backend_steps)
+    assert "--ignore=scripts/tests/test_windows_scripts.py" in backend_test_commands
+    windows_job = ci_config["jobs"]["windows-automation"]
+    assert windows_job["runs-on"] == "windows-2025"
+    windows_commands = "\n".join(str(step.get("run", "")) for step in windows_job["steps"])
+    assert "pytest==$env:PYTEST_VERSION" in windows_commands
+    assert "python -m pytest -q scripts/tests/test_windows_scripts.py" in windows_commands
     docker_steps = ci_config["jobs"]["docker-smoke"]["steps"]
     install_index = next(
         index
