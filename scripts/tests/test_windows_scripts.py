@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import shutil
@@ -1321,6 +1322,9 @@ def test_native_redis_migration_helper_requires_exact_sandbox(
         "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf"
     )
     command = "printf exact"
+    command_runner = (
+        "echo " + base64.b64encode(command.encode("utf-8")).decode("ascii") + "|base64 -d|sh -e"
+    )
     payload = {
         "Id": container_id,
         "Name": f"/{container_name}",
@@ -1328,7 +1332,7 @@ def test_native_redis_migration_helper_requires_exact_sandbox(
             "Image": image,
             "User": "0:0",
             "Entrypoint": ["sh"],
-            "Cmd": ["-ec", command],
+            "Cmd": ["-ec", command_runner],
             "Labels": {
                 "com.whaleguard.redis-volume-migration": "true",
                 "com.whaleguard.parent-compose-project": project,
@@ -1407,6 +1411,34 @@ try {{
 catch {{
     if ($_.Exception.Message -notmatch 'sandbox is not exact') {{ exit 3 }}
 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_exact_capability_set_normalizes_only_docker_json_null() -> None:
+    source = f"""
+. {ps_quote(COMMON)}
+if (-not (Test-WgExactCapabilitySet -Actual @($null) -Expected @())) {{ exit 2 }}
+if (Test-WgExactCapabilitySet -Actual @($null, 'SYS_ADMIN') -Expected @()) {{ exit 3 }}
+if (Test-WgExactCapabilitySet -Actual @('') -Expected @()) {{ exit 4 }}
+exit 0
+"""
+    result = run_ps(source)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_redis_migration_runner_is_ps51_native_argument_safe() -> None:
+    command = "printf '%s\\n' \"$value\"; awk '$1 == \\\"CapEff:\\\" { print $2 }'"
+    source = f"""
+. {ps_quote(COMMON)}
+$command = {ps_quote(command)}
+$runner = ConvertTo-WgRedisMigrationRunner -Command $command
+if ($runner -notmatch '^echo [A-Za-z0-9+/]+={{0,2}}[|]base64 -d[|]sh -e$') {{ exit 2 }}
+$encoded = $runner.Substring(5, $runner.IndexOf('|') - 5)
+$decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded))
+if ($decoded -cne $command) {{ exit 3 }}
 exit 0
 """
     result = run_ps(source)

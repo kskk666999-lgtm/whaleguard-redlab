@@ -36,6 +36,8 @@
 - Windows Docker 目标解析不再依赖可能陈旧或指向远端的用户 context；签名 CLI 只探测两个 allowlist 内的本地 Docker Desktop named pipe，环境覆盖仍一律阻断。
 - `START_WHALEGUARD.bat` 会在验证官方签名、安装路径和现有进程归属后按需隐藏启动 Docker Desktop，并有界等待本地 Linux Engine；其他停止、检查和重置入口仍不会隐式启动 Docker。
 - 单次 Docker Engine named-pipe readiness probe 增加 5 秒进程级硬超时；后端 socket 存在但不响应时会有界终止探针并继续受总启动时限约束，不再无限等待进程或输出流。
+- Windows Redis 迁移门禁把 Docker inspect 的 `CapAdd: null` 严格规范化为空能力集合；任何非空或未知 capability 仍会 fail-closed 拒绝执行。
+- Redis 迁移脚本经 UTF-8/Base64 固定执行器传给 Docker，并继续对编码后的完整命令做精确元数据校验，避免 Windows PowerShell 5.1 截断含引号的原生命令参数。
 
 ### Security
 

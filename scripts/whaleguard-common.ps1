@@ -1269,15 +1269,34 @@ function Test-WgExactCapabilitySet {
         [AllowNull()][string[]]$Expected
     )
 
-    $actualValues = @($Actual | ForEach-Object {
+    $actualValues = @($Actual | Where-Object { $null -ne $_ } | ForEach-Object {
         $value = ([string]$_).ToUpperInvariant()
         if ($value.StartsWith("CAP_", [StringComparison]::Ordinal)) {
             $value = $value.Substring(4)
         }
         $value
     } | Sort-Object)
-    $expectedValues = @($Expected | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object)
+    $expectedValues = @(
+        $Expected |
+            Where-Object { $null -ne $_ } |
+            ForEach-Object { $_.ToUpperInvariant() } |
+            Sort-Object
+    )
     return Test-WgExactStringList -Actual $actualValues -Expected $expectedValues
+}
+
+function ConvertTo-WgRedisMigrationRunner {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateLength(1, 8192)]
+        [string]$Command
+    )
+
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Command))
+    if ($encoded -notmatch "^[A-Za-z0-9+/]+={0,2}$") {
+        throw "The Redis migration command could not be encoded safely."
+    }
+    return "echo $encoded|base64 -d|sh -e"
 }
 
 function ConvertFrom-WgDockerJsonOutput {
@@ -1419,13 +1438,16 @@ function Assert-WgRedisMigrationHelperInspection {
     $restartName = Get-WgObjectPropertyValue -InputObject $restartPolicy -Name "Name"
     $ipcMode = [string](Get-WgObjectPropertyValue -InputObject $hostConfig -Name "IpcMode")
     $cgroupMode = [string](Get-WgObjectPropertyValue -InputObject $hostConfig -Name "CgroupnsMode")
+    $expectedCommandRunner = ConvertTo-WgRedisMigrationRunner -Command $Command
     if (
         (Get-WgObjectPropertyValue -InputObject $Inspection -Name "Id") -cne $ContainerId -or
         (Get-WgObjectPropertyValue -InputObject $Inspection -Name "Name") -cne "/$ContainerName" -or
         (Get-WgObjectPropertyValue -InputObject $config -Name "Image") -cne $Image -or
         (Get-WgObjectPropertyValue -InputObject $config -Name "User") -cne $User -or
         -not (Test-WgExactStringList -Actual $entrypoint -Expected @("sh")) -or
-        -not (Test-WgExactStringList -Actual $configuredCommand -Expected @("-ec", $Command)) -or
+        -not (Test-WgExactStringList `
+            -Actual $configuredCommand `
+            -Expected @("-ec", $expectedCommandRunner)) -or
         (Get-WgObjectPropertyValue -InputObject $labels -Name "com.whaleguard.redis-volume-migration") -cne "true" -or
         (Get-WgObjectPropertyValue -InputObject $labels -Name "com.whaleguard.parent-compose-project") -cne $ProjectName -or
         (Get-WgObjectPropertyValue -InputObject $labels -Name "com.whaleguard.redis-volume-migration-role") -cne $Role -or
@@ -1484,6 +1506,7 @@ function Invoke-WgRedisScopedMigrationHelper {
 
     $containerName = "wg-redis-migrate-$Role-$([Guid]::NewGuid().ToString('N'))"
     $mount = "$VolumeName`:/data" + $(if ($ReadOnlyVolume) { ":ro" } else { "" })
+    $commandRunner = ConvertTo-WgRedisMigrationRunner -Command $Command
     $arguments = $DockerBaseArguments + @(
         "create",
         "--name", $containerName,
@@ -1503,7 +1526,7 @@ function Invoke-WgRedisScopedMigrationHelper {
         "--entrypoint", "sh",
         "-v", $mount,
         $Image,
-        "-ec", $Command
+        "-ec", $commandRunner
     )
     $createResult = Invoke-WgDockerCaptureRequired `
         -Docker $Docker `
