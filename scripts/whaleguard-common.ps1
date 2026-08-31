@@ -1139,16 +1139,47 @@ function Get-WgLocalDockerTarget {
 function Test-WgDockerEngineReady {
     param(
         [Parameter(Mandatory = $true)][string]$Docker,
-        [Parameter(Mandatory = $true)][string]$Endpoint
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [ValidateRange(100, 30000)][int]$TimeoutMilliseconds = 5000
     )
 
     if (-not (Test-WgLocalDockerEndpoint -Endpoint $Endpoint)) {
         throw "Docker Engine readiness probes are restricted to trusted local Windows named pipes."
     }
-    $probe = Invoke-WgExternalCommandCapture -FilePath $Docker -Arguments @(
-        "--host", $Endpoint, "version", "--format", "{{.Server.Version}}"
-    )
-    return $probe.ExitCode -eq 0
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Docker
+    $startInfo.Arguments = "--host `"$Endpoint`" version --format `"{{.Server.Version}}`""
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $outputTask = $null
+    $errorTask = $null
+    try {
+        if (-not $process.Start()) { throw "Unable to start the Docker Engine readiness probe." }
+        $process.StandardInput.Close()
+        $outputTask = $process.StandardOutput.ReadToEndAsync()
+        $errorTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            try { $process.Kill() } catch { }
+            $null = $process.WaitForExit(1000)
+            return $false
+        }
+        if (-not $outputTask.Wait(1000) -or -not $errorTask.Wait(1000)) {
+            return $false
+        }
+        $output = $outputTask.Result.Trim()
+        return (
+            $process.ExitCode -eq 0 -and
+            $output -match "^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?$"
+        )
+    }
+    finally {
+        $process.Dispose()
+    }
 }
 
 function Assert-WgLocalDockerContext {

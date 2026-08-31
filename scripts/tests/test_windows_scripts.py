@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ def ps_quote(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def run_ps(source: str) -> subprocess.CompletedProcess[str]:
+def run_ps(source: str, *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603
         [
             str(POWERSHELL),
@@ -32,6 +33,7 @@ def run_ps(source: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        timeout=timeout,
     )
 
 
@@ -1521,17 +1523,25 @@ exit 0
 def test_docker_engine_readiness_probe_accepts_only_local_pipe_failures(tmp_path: Path) -> None:
     not_ready = tmp_path / "docker-not-ready.cmd"
     ready = tmp_path / "docker-ready.cmd"
+    hanging = tmp_path / "docker-hanging.cmd"
     not_ready.write_text(
         "@echo off\r\necho simulated named-pipe startup error 1>&2\r\nexit /b 7\r\n",
         encoding="ascii",
     )
     ready.write_text("@echo off\r\necho 29.7.2\r\nexit /b 0\r\n", encoding="ascii")
+    hanging.write_text(
+        "@echo off\r\n:loop\r\ngoto loop\r\n",
+        encoding="ascii",
+    )
     source = f"""
 . {ps_quote(COMMON)}
 $ErrorActionPreference = 'Stop'
 $endpoint = 'npipe:////./pipe/docker_engine'
 if (Test-WgDockerEngineReady -Docker {ps_quote(not_ready)} -Endpoint $endpoint) {{ exit 2 }}
 if (-not (Test-WgDockerEngineReady -Docker {ps_quote(ready)} -Endpoint $endpoint)) {{ exit 3 }}
+if (Test-WgDockerEngineReady `
+    -Docker {ps_quote(hanging)} -Endpoint $endpoint -TimeoutMilliseconds 250
+) {{ exit 8 }}
 try {{
     $null = Test-WgDockerEngineReady `
         -Docker {ps_quote(ready)} -Endpoint 'ssh://prod.example.invalid'
@@ -1546,8 +1556,11 @@ try {{
 catch {{ }}
 exit 0
 """
-    result = run_ps(source)
+    started = time.monotonic()
+    result = run_ps(source, timeout=10)
+    elapsed = time.monotonic() - started
     assert result.returncode == 0, result.stderr + result.stdout
+    assert elapsed < 5
 
 
 def test_trusted_path_rejects_junction_ancestors(tmp_path: Path) -> None:
